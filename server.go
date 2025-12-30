@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -17,7 +18,7 @@ type Server struct {
 	instructions string
 	tools        []Tool
 	handlers     map[string]ToolHandler
-	transport    *StdioTransport
+	transport    Transport
 }
 
 // NewServer creates a new MCP server.
@@ -43,7 +44,17 @@ func (s *Server) AddTool(tool Tool, handler ToolHandler) {
 
 // Run starts the server on stdio.
 func (s *Server) Run(ctx context.Context) error {
-	s.transport = NewStdioTransport(os.Stdin, os.Stdout)
+	return s.RunWithIO(ctx, os.Stdin, os.Stdout)
+}
+
+// RunWithIO starts the server using a stdio transport backed by the provided reader/writer.
+func (s *Server) RunWithIO(ctx context.Context, r io.Reader, w io.Writer) error {
+	return s.RunWithTransport(ctx, NewStdioTransport(r, w))
+}
+
+// RunWithTransport starts the server using the provided transport.
+func (s *Server) RunWithTransport(ctx context.Context, transport Transport) error {
+	s.transport = transport
 
 	for {
 		select {

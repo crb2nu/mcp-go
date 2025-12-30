@@ -9,7 +9,9 @@ MCP is a protocol for connecting AI assistants to external tools and data source
 - **Complete MCP Protocol** - Full JSON-RPC 2.0 + MCP type definitions
 - **Server Framework** - Simple API for registering tools and handling requests
 - **Multiple Transports** - Stdio (newline-delimited + Content-Length) and WebSocket
+- **Connection Pool** - Manage multiple MCP server connections with idle reaping
 - **Production Ready** - Battle-tested with 26+ production MCP servers
+- **Examples** - Echo server, file server, and more in `examples/`
 
 ## Installation
 
@@ -128,6 +130,7 @@ mcp.ErrorResult(err)
 #### Stdio Transport (Default)
 
 The server uses stdio transport by default. It supports both:
+
 - Newline-delimited JSON (MCP standard)
 - Content-Length framing (LSP-style)
 
