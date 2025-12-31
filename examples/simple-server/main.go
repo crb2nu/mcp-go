@@ -1,7 +1,7 @@
 // Example MCP server demonstrating basic tool registration.
 //
 // Run with: go run main.go
-// Then connect with an MCP client (e.g., Claude Desktop, VS Code extension).
+// Then connect with an MCP client (e.g., Example Client, VS Code extension).
 package main
 
 import (
