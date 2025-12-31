@@ -96,6 +96,7 @@ server.Run(ctx)
 ### Tool Definition
 
 ```go
+// Manual definition
 mcp.Tool{
     Name:        "tool_name",
     Description: "What this tool does",
@@ -110,6 +111,12 @@ mcp.Tool{
         Required: []string{"param1"},
     },
 }
+
+// Fluent definition (Recommended)
+tool := mcp.NewTool("tool_name", "What this tool does").
+    WithString("param1", "Description of param1", true).
+    WithNumber("param2", "Optional number", false).
+    Build()
 ```
 
 ### Result Helpers
