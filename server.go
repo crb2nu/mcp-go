@@ -21,16 +21,18 @@ type Server struct {
 	handlers     map[string]ToolHandler
 	transport    Transport
 	logger       *slog.Logger
+	validator    *Validator
 }
 
 // NewServer creates a new MCP server.
 func NewServer(name, version string) *Server {
 	return &Server{
-		name:     name,
-		version:  version,
-		tools:    []Tool{},
-		handlers: make(map[string]ToolHandler),
-		logger:   slog.Default(),
+		name:      name,
+		version:   version,
+		tools:     []Tool{},
+		handlers:  make(map[string]ToolHandler),
+		logger:    slog.Default(),
+		validator: NewValidator(true),
 	}
 }
 
@@ -102,10 +104,11 @@ func (s *Server) ServeTransport(ctx context.Context, transport Transport) error 
 
 func (s *Server) handleMessage(ctx context.Context, msg *Message) (*Message, error) {
 	// Validation Layer
-	if msg.JSONRPC != JSONRPCVersion {
-		return NewErrorResponse(msg.ID, InvalidRequest, fmt.Sprintf("invalid jsonrpc version: %s", msg.JSONRPC)), nil
-	}
-	if msg.Method == "" && msg.ID == nil {
+	if msg.IsRequest() {
+		if err := s.validator.ValidateRequest(msg); err != nil {
+			return NewErrorResponse(msg.ID, InvalidRequest, err.Error()), nil
+		}
+	} else if msg.Method == "" && msg.ID == nil {
 		return nil, fmt.Errorf("empty message")
 	}
 
@@ -123,7 +126,11 @@ func (s *Server) handleMessage(ctx context.Context, msg *Message) (*Message, err
 	case "prompts/list":
 		return s.handlePromptsList(msg)
 	default:
-		return NewErrorResponse(msg.ID, MethodNotFound, fmt.Sprintf("unknown method: %s", msg.Method)), nil
+		// If it's a request, return MethodNotFound. If notification, ignore.
+		if msg.ID != nil {
+			return NewErrorResponse(msg.ID, MethodNotFound, fmt.Sprintf("unknown method: %s", msg.Method)), nil
+		}
+		return nil, nil
 	}
 }
 
