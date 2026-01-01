@@ -63,7 +63,12 @@ func (s *Server) RunWithIO(ctx context.Context, r io.Reader, w io.Writer) error 
 // RunWithTransport starts the server using the provided transport.
 func (s *Server) RunWithTransport(ctx context.Context, transport Transport) error {
 	s.transport = transport
+	return s.ServeTransport(ctx, transport)
+}
 
+// ServeTransport serves the MCP protocol over the provided transport.
+// It is safe to call this method concurrently on the same Server instance with different transports.
+func (s *Server) ServeTransport(ctx context.Context, transport Transport) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -71,7 +76,7 @@ func (s *Server) RunWithTransport(ctx context.Context, transport Transport) erro
 		default:
 		}
 
-		msg, err := s.transport.Recv(ctx)
+		msg, err := transport.Recv(ctx)
 		if err != nil {
 			if err != io.EOF {
 				s.logger.Error("recv error", "err", err)
@@ -88,7 +93,7 @@ func (s *Server) RunWithTransport(ctx context.Context, transport Transport) erro
 
 		if resp != nil {
 			s.logger.Debug("send response", "id", resp.ID, "method", resp.Method)
-			if err := s.transport.Send(ctx, resp); err != nil {
+			if err := transport.Send(ctx, resp); err != nil {
 				return fmt.Errorf("send response: %w", err)
 			}
 		}

@@ -15,7 +15,7 @@ To provide a rock-solid, high-performance, and fully compliant Go SDK for the Mo
 
 ### Protocol Completeness
 
-- [ ] **SSE Transport**: Implement Server-Sent Events transport for HTTP-based interactions.
+- [x] **SSE Transport**: Implement Server-Sent Events transport for HTTP-based interactions.
 - [ ] **Validation Layer**: Strict schema validation for incoming JSON-RPC messages to fail fast on malformed requests.
 - [ ] **Structured Logging**: Deep integration with `slog` for protocol-level trace debugging.
 
