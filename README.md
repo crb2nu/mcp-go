@@ -1,5 +1,10 @@
 # mcp-go
 
+![Header](assets/header.svg)
+
+[![pipeline status](https://gitlab.flexinfer.ai/libs/mcp-go/badges/main/pipeline.svg)](https://gitlab.flexinfer.ai/libs/mcp-go/-/commits/main)
+[![coverage report](https://gitlab.flexinfer.ai/libs/mcp-go/badges/main/coverage.svg)](https://gitlab.flexinfer.ai/libs/mcp-go/-/commits/main)
+
 A Go SDK for building [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers.
 
 MCP is a protocol for connecting AI assistants to external tools and data sources. This library provides everything you need to build MCP servers in Go.
