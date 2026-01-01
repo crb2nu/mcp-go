@@ -1,16 +1,33 @@
-# MCP Go Roadmap
+# Roadmap: mcp-go
 
-## Quarter 1 2026: Protocol Compliance
+## Vision
 
-- [ ] **SSE Transport**: Full implementation of Server-Sent Events transport for MCP.
-- [x] **Tool Registration Interface**: Fluent API for registering Go func as MCP tools.
-- [ ] **JSON-RPC Validation**: Strict validation layer for incoming RPC messages.
+To provide a rock-solid, high-performance, and fully compliant Go SDK for the Model Context Protocol (MCP), serving as the foundational layer for all Go-based MCP servers and tools in the FlexInfer ecosystem.
 
-## Quarter 2 2026: Advanced Features
+## Current Status
 
-- [ ] **Sampling Support**: Implement the MCP 'sampling' capability for agent-initiated interactions.
-- [ ] **Resource Subscriptions**: Allow clients to subscribe to resource updates.
+- **Protocol**: Full JSON-RPC 2.0 implementation with MCP types.
+- **Transports**: Stdio (JSON-L + Header) and WebSocket.
+- **Utils**: Fluent `ToolBuilder` and connection pooling with idle reaping.
+- **Maturity**: Used in production by 26+ servers.
 
-## Future / Backlog
+## Immediate Priorities (Q1 2026)
 
-- [ ] **Go Plugin System**: Dynamic loading of MCP servers as Go plugins (so/dll).
+### Protocol Completeness
+
+- [ ] **SSE Transport**: Implement Server-Sent Events transport for HTTP-based interactions.
+- [ ] **Validation Layer**: Strict schema validation for incoming JSON-RPC messages to fail fast on malformed requests.
+- [ ] **Structured Logging**: Deep integration with `slog` for protocol-level trace debugging.
+
+## Future Milestones (Q2 2026+)
+
+### Advanced Capabilities
+
+- [ ] **Sampling**: Implement the 'sampling' capability allowing servers to request completions from the client (Agentic patterns).
+- [ ] **Resource Subscriptions**: Support for client subscriptions to resource updates.
+- [ ] **Plugin System**: Experimental support for loading MCP servers as Go plugins.
+
+## Maintenance
+
+- [ ] Maintain compatibility with Go 1.22+.
+- [ ] Regular sync with official MCP specification updates.

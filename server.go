@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 )
 
@@ -19,6 +20,7 @@ type Server struct {
 	tools        []Tool
 	handlers     map[string]ToolHandler
 	transport    Transport
+	logger       *slog.Logger
 }
 
 // NewServer creates a new MCP server.
@@ -28,7 +30,13 @@ func NewServer(name, version string) *Server {
 		version:  version,
 		tools:    []Tool{},
 		handlers: make(map[string]ToolHandler),
+		logger:   slog.Default(),
 	}
+}
+
+// SetLogger sets the server logger.
+func (s *Server) SetLogger(logger *slog.Logger) {
+	s.logger = logger
 }
 
 // SetInstructions sets the server instructions.
@@ -65,8 +73,13 @@ func (s *Server) RunWithTransport(ctx context.Context, transport Transport) erro
 
 		msg, err := s.transport.Recv(ctx)
 		if err != nil {
+			if err != io.EOF {
+				s.logger.Error("recv error", "err", err)
+			}
 			return nil // Client disconnected
 		}
+
+		s.logger.Debug("recv message", "method", msg.Method, "id", msg.ID)
 
 		resp, err := s.handleMessage(ctx, msg)
 		if err != nil {
@@ -74,6 +87,7 @@ func (s *Server) RunWithTransport(ctx context.Context, transport Transport) erro
 		}
 
 		if resp != nil {
+			s.logger.Debug("send response", "id", resp.ID, "method", resp.Method)
 			if err := s.transport.Send(ctx, resp); err != nil {
 				return fmt.Errorf("send response: %w", err)
 			}
@@ -82,6 +96,14 @@ func (s *Server) RunWithTransport(ctx context.Context, transport Transport) erro
 }
 
 func (s *Server) handleMessage(ctx context.Context, msg *Message) (*Message, error) {
+	// Validation Layer
+	if msg.JSONRPC != JSONRPCVersion {
+		return NewErrorResponse(msg.ID, InvalidRequest, fmt.Sprintf("invalid jsonrpc version: %s", msg.JSONRPC)), nil
+	}
+	if msg.Method == "" && msg.ID == nil {
+		return nil, fmt.Errorf("empty message")
+	}
+
 	switch msg.Method {
 	case "initialize":
 		return s.handleInitialize(msg)
