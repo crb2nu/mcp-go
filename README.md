@@ -1,3 +1,4 @@
+![Banner](assets/banner.png)
 # mcp-go
 
 ![Header](assets/header.svg)
