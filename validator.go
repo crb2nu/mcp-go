@@ -33,7 +33,7 @@ func (v *Validator) ValidateRequest(msg *Message) error {
 		return v.validateInitialize(msg.Params)
 	case "tools/call":
 		return v.validateCallTool(msg.Params)
-	// Add other methods as needed
+		// Add other methods as needed
 	}
 
 	return nil

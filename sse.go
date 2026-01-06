@@ -64,7 +64,7 @@ func (s *SSEServer) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	// Spec says: `event: endpoint`, `data: URI`
 	// We'll assume the client knows where to POST or we provide a default relative path `?session_id=...`
 	// if the handler serves both.
-	
+
 	// Determine the POST endpoint.
 	// For now, we send `?session_id=<uuid>` assuming the client posts to the same URL or similar.
 	// Actually, let's just send the session ID.
@@ -76,7 +76,7 @@ func (s *SSEServer) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	// No, ServeTransport blocks. We can call it here.
 	// But ServeTransport reads from transport.Recv().
 	// SSETransport.Recv() waits for messages from HandleMessage.
-	
+
 	ctx := r.Context()
 	errCh := make(chan error, 1)
 	go func() {
