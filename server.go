@@ -52,6 +52,11 @@ func (s *Server) AddTool(tool Tool, handler ToolHandler) {
 	s.handlers[tool.Name] = handler
 }
 
+// Tools returns the list of registered tools.
+func (s *Server) Tools() []Tool {
+	return s.tools
+}
+
 // Run starts the server on stdio.
 func (s *Server) Run(ctx context.Context) error {
 	return s.RunWithIO(ctx, os.Stdin, os.Stdout)
