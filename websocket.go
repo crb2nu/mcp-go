@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,10 +48,14 @@ func NewWebSocketTransport(ctx context.Context, cfg WebSocketConfig, serverName 
 	// Build URL with server query param
 	url := cfg.URL
 	if serverName != "" {
-		url = fmt.Sprintf("%s?server=%s", cfg.URL, serverName)
+		if strings.Contains(url, "?") {
+			url = fmt.Sprintf("%s&server=%s", url, serverName)
+		} else {
+			url = fmt.Sprintf("%s?server=%s", url, serverName)
+		}
 	}
 	if cfg.Profile != "" {
-		if serverName != "" {
+		if strings.Contains(url, "?") {
 			url = fmt.Sprintf("%s&profile=%s", url, cfg.Profile)
 		} else {
 			url = fmt.Sprintf("%s?profile=%s", url, cfg.Profile)
