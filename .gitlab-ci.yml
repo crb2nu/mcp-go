@@ -10,11 +10,14 @@ default:
 
 lint:
   extends: .go-lint
+  image: golang:1.24
 
 test:
   extends: .go-test
+  image: golang:1.24
 
 build:
   extends: .go-build
+  image: golang:1.24
   script:
     - go build ./...
