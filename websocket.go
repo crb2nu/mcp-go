@@ -27,9 +27,10 @@ type WebSocketTransport struct {
 type WebSocketConfig struct {
 	URL                  string
 	Profile              string
-	CFAccessClientID     string        // Cloudflare Access client ID (optional)
-	CFAccessClientSecret string        // Cloudflare Access client secret (optional)
-	ConnectTimeout       time.Duration // Default: 10s
+	CFAccessClientID     string            // Cloudflare Access client ID (optional)
+	CFAccessClientSecret string            // Cloudflare Access client secret (optional)
+	Headers              map[string]string // Custom HTTP headers (optional)
+	ConnectTimeout       time.Duration     // Default: 10s
 	ReadTimeout          time.Duration
 	WriteTimeout         time.Duration
 	ClientInfo           ClientInfo // Client info for initialization
@@ -67,6 +68,9 @@ func NewWebSocketTransport(ctx context.Context, cfg WebSocketConfig, serverName 
 	if cfg.CFAccessClientID != "" && cfg.CFAccessClientSecret != "" {
 		header.Set("CF-Access-Client-Id", cfg.CFAccessClientID)
 		header.Set("CF-Access-Client-Secret", cfg.CFAccessClientSecret)
+	}
+	for k, v := range cfg.Headers {
+		header.Set(k, v)
 	}
 
 	// Create dialer with timeout
