@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -23,17 +24,23 @@ type Server struct {
 	transport    Transport
 	logger       *slog.Logger
 	validator    *Validator
+
+	// Concurrency control
+	concurrencyLimit int
+	semaphore        chan struct{}
+	wg               sync.WaitGroup
 }
 
 // NewServer creates a new MCP server.
 func NewServer(name, version string) *Server {
 	return &Server{
-		name:      name,
-		version:   version,
-		tools:     []Tool{},
-		handlers:  make(map[string]ToolHandler),
-		logger:    slog.Default(),
-		validator: NewValidator(true),
+		name:             name,
+		version:          version,
+		tools:            []Tool{},
+		handlers:         make(map[string]ToolHandler),
+		logger:           slog.Default(),
+		validator:        NewValidator(true),
+		concurrencyLimit: 1, // Default to sequential for backward compatibility
 	}
 }
 
@@ -45,6 +52,18 @@ func (s *Server) SetLogger(logger *slog.Logger) {
 // SetInstructions sets the server instructions.
 func (s *Server) SetInstructions(instructions string) {
 	s.instructions = instructions
+}
+
+// SetConcurrencyLimit sets the maximum number of concurrent requests.
+// A limit of 1 (default) means sequential handling.
+// A limit <= 0 means unlimited concurrency (one goroutine per request).
+func (s *Server) SetConcurrencyLimit(limit int) {
+	s.concurrencyLimit = limit
+	if limit > 0 {
+		s.semaphore = make(chan struct{}, limit)
+	} else {
+		s.semaphore = nil
+	}
 }
 
 // AddTool registers a tool with the server.
@@ -80,6 +99,7 @@ func (s *Server) ServeTransport(ctx context.Context, transport Transport) error 
 	for {
 		select {
 		case <-ctx.Done():
+			s.wg.Wait()
 			return ctx.Err()
 		default:
 		}
@@ -89,21 +109,51 @@ func (s *Server) ServeTransport(ctx context.Context, transport Transport) error 
 			if err != io.EOF {
 				s.logger.Error("recv error", "err", err)
 			}
-			return nil // Client disconnected
+			break // Client disconnected
 		}
 
-		s.logger.Debug("recv message", "method", msg.Method, "id", msg.ID)
-
-		resp, err := s.handleMessage(ctx, msg)
-		if err != nil {
-			resp = NewErrorResponse(msg.ID, InternalError, err.Error())
+		// Handle notifications synchronously to preserve ordering
+		if msg.IsNotification() {
+			_, _ = s.handleMessage(ctx, msg)
+			continue
 		}
 
-		if resp != nil {
-			s.logger.Debug("send response", "id", resp.ID, "method", resp.Method)
-			if err := transport.Send(ctx, resp); err != nil {
-				return fmt.Errorf("send response: %w", err)
+		// Handle requests (concurrently if limit > 1 or <= 0)
+		if s.concurrencyLimit == 1 {
+			// Sequential mode
+			s.handleAndSend(ctx, transport, msg)
+		} else {
+			// Concurrent mode
+			if s.semaphore != nil {
+				s.semaphore <- struct{}{}
 			}
+			s.wg.Add(1)
+			go func(m *Message) {
+				defer s.wg.Done()
+				if s.semaphore != nil {
+					defer func() { <-s.semaphore }()
+				}
+				s.handleAndSend(ctx, transport, m)
+			}(msg)
+		}
+	}
+
+	s.wg.Wait()
+	return nil
+}
+
+func (s *Server) handleAndSend(ctx context.Context, transport Transport, msg *Message) {
+	s.logger.Debug("handle message", "method", msg.Method, "id", msg.ID)
+
+	resp, err := s.handleMessage(ctx, msg)
+	if err != nil {
+		resp = NewErrorResponse(msg.ID, InternalError, err.Error())
+	}
+
+	if resp != nil {
+		s.logger.Debug("send response", "id", resp.ID, "method", resp.Method)
+		if err := transport.Send(ctx, resp); err != nil {
+			s.logger.Error("send response error", "err", err, "id", resp.ID)
 		}
 	}
 }

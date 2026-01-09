@@ -9,6 +9,7 @@ To provide a rock-solid, high-performance, and fully compliant Go SDK for the Mo
 - **Protocol**: Full JSON-RPC 2.0 implementation with MCP types.
 - **Transports**: Stdio (JSON-L + Header) and WebSocket.
 - **Utils**: Fluent `ToolBuilder` and connection pooling with idle reaping.
+- **Concurrency**: Parallel request handling with configurable limits and backpressure.
 - **Maturity**: Used in production by 26+ servers.
 
 ## Immediate Priorities (Q1 2026)
@@ -17,7 +18,7 @@ To provide a rock-solid, high-performance, and fully compliant Go SDK for the Mo
 
 - [x] **SSE Transport**: Implement Server-Sent Events transport for HTTP-based interactions.
 - [x] **Validation Layer**: Strict schema validation for incoming JSON-RPC messages to fail fast on malformed requests.
-- [ ] **Structured Logging**: Deep integration with `slog` for protocol-level trace debugging.
+- [x] **Structured Logging**: Deep integration with `slog` for protocol-level trace debugging and tool duration tracking.
 
 ## Future Milestones (Q2 2026+)
 
