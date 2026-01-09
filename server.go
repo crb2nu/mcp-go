@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 )
 
 // ToolHandler is a function that handles a tool call.
@@ -133,6 +134,7 @@ func (s *Server) handleMessage(ctx context.Context, msg *Message) (*Message, err
 	default:
 		// If it's a request, return MethodNotFound. If notification, ignore.
 		if msg.ID != nil {
+			s.logger.Warn("unknown method", "method", msg.Method, "id", msg.ID)
 			return NewErrorResponse(msg.ID, MethodNotFound, fmt.Sprintf("unknown method: %s", msg.Method)), nil
 		}
 		return nil, nil
@@ -140,6 +142,7 @@ func (s *Server) handleMessage(ctx context.Context, msg *Message) (*Message, err
 }
 
 func (s *Server) handleInitialize(msg *Message) (*Message, error) {
+	s.logger.Info("client connected", "client_info", msg.Params)
 	result := InitializeResult{
 		ProtocolVersion: ProtocolVersion,
 		Capabilities: Capabilities{
@@ -164,19 +167,27 @@ func (s *Server) handleToolsCall(ctx context.Context, msg *Message) (*Message, e
 		return NewErrorResponse(msg.ID, InvalidParams, err.Error()), nil
 	}
 
+	s.logger.Info("tool call", "name", params.Name, "id", msg.ID)
+	start := time.Now()
+
 	handler, ok := s.handlers[params.Name]
 	if !ok {
+		s.logger.Warn("unknown tool", "name", params.Name)
 		return NewErrorResponse(msg.ID, InvalidParams, fmt.Sprintf("unknown tool: %s", params.Name)), nil
 	}
 
 	result, err := handler(ctx, params.Arguments)
+	duration := time.Since(start)
+
 	if err != nil {
+		s.logger.Error("tool call failed", "name", params.Name, "duration", duration, "error", err)
 		return NewResponse(msg.ID, &CallToolResult{
 			Content: []Content{{Type: "text", Text: err.Error()}},
 			IsError: true,
 		})
 	}
 
+	s.logger.Info("tool call success", "name", params.Name, "duration", duration)
 	return NewResponse(msg.ID, result)
 }
 
