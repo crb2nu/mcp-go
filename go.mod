@@ -1,6 +1,6 @@
 module gitlab.flexinfer.ai/libs/mcp-go
 
-go 1.22
+go 1.25.5
 
 require (
 	github.com/google/uuid v1.6.0
