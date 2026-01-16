@@ -258,12 +258,12 @@ func TextResult(text string) *CallToolResult {
 
 // JSONResult creates a JSON result.
 func JSONResult(v any) (*CallToolResult, error) {
-	b, err := json.MarshalIndent(v, "", "  ")
+	text, err := formatStructuredResult(v)
 	if err != nil {
 		return nil, err
 	}
 	return &CallToolResult{
-		Content: []Content{{Type: "text", Text: string(b)}},
+		Content: []Content{{Type: "text", Text: text}},
 	}, nil
 }
 
