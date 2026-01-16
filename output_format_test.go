@@ -106,3 +106,44 @@ func TestEstimateTokensApprox(t *testing.T) {
 		t.Fatalf("expected TOON to be smaller than pretty JSON (approx), got toon=%d json_pretty=%d", toonTokens, jsonPrettyTokens)
 	}
 }
+
+func TestTOON_DeepConvertsStdoutJSON(t *testing.T) {
+	t.Setenv("LOOM_MCP_OUTPUT_FORMAT", "toon")
+
+	payload := map[string]any{
+		"stdout": `{"ok":true,"items":[{"id":1},{"id":2}]}`,
+	}
+
+	res, err := JSONResult(payload)
+	if err != nil {
+		t.Fatalf("JSONResult: %v", err)
+	}
+	got := res.Content[0].Text
+
+	// Embedded JSON should be decoded into nested TOON, not kept as a quoted JSON string.
+	if strings.Contains(got, `"{"`) || strings.Contains(got, `\"ok\"`) {
+		t.Fatalf("expected embedded JSON to be decoded, got: %q", got)
+	}
+	if !strings.Contains(got, "stdout:") || !strings.Contains(got, "ok: true") || !strings.Contains(got, "items[2]{id}:") {
+		t.Fatalf("expected decoded stdout object, got: %q", got)
+	}
+}
+
+func TestTOON_DoesNotDeepConvertContentField(t *testing.T) {
+	t.Setenv("LOOM_MCP_OUTPUT_FORMAT", "toon")
+
+	payload := map[string]any{
+		"content": `{"ok":true}`,
+	}
+
+	res, err := JSONResult(payload)
+	if err != nil {
+		t.Fatalf("JSONResult: %v", err)
+	}
+	got := res.Content[0].Text
+
+	// For content-like fields, preserve original string (commonly file contents).
+	if strings.Contains(got, "\nok: true") || strings.Contains(got, "\n  ok: true") {
+		t.Fatalf("expected content field not to be deep-converted, got: %q", got)
+	}
+}
