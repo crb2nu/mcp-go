@@ -73,8 +73,11 @@ func TestJSONResult_TOONFallbacksToJSONOnUnsupportedString(t *testing.T) {
 		t.Fatalf("JSONResult: %v", err)
 	}
 	got := res.Content[0].Text
-	if !strings.HasPrefix(got, "{") {
-		t.Fatalf("expected JSON fallback, got: %q", got)
+	if strings.HasPrefix(got, "{") {
+		t.Fatalf("expected TOON encoding (no JSON fallback), got: %q", got)
+	}
+	if !strings.Contains(got, `bad: "\u0001"`) {
+		t.Fatalf("expected unicode escape for control char, got: %q", got)
 	}
 }
 

@@ -475,9 +475,16 @@ func quoteTOONString(s string) (string, error) {
 			b.WriteString(`\r`)
 		case '\t':
 			b.WriteString(`\t`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
 		default:
-			if r < 0x20 {
-				return "", fmt.Errorf("unsupported control character: %U", r)
+			// Support arbitrary control characters using JSON-style unicode escapes.
+			// This prevents TOON formatting from failing and falling back to JSON.
+			if r < 0x20 || r == 0x7f {
+				b.WriteString(fmt.Sprintf(`\u%04x`, r))
+				continue
 			}
 			b.WriteRune(r)
 		}
