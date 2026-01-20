@@ -38,9 +38,10 @@ type Transport interface {
 //
 // Reference: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
 type StdioTransport struct {
-	reader *bufio.Reader
-	writer io.Writer
-	mu     sync.Mutex
+	reader  *bufio.Reader
+	writer  io.Writer
+	readMu  sync.Mutex
+	writeMu sync.Mutex
 }
 
 // NewStdioTransport creates a new stdio transport.
@@ -53,8 +54,8 @@ func NewStdioTransport(r io.Reader, w io.Writer) *StdioTransport {
 
 // Send sends a message using newline-delimited JSON.
 func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
 
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -74,16 +75,27 @@ func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
 // Recv receives a message.
 // Supports both Content-Length framing (LSP-style) and newline-delimited JSON.
 func (t *StdioTransport) Recv(ctx context.Context) (*Message, error) {
-	// Peek at the first few bytes to detect framing
-	peek, _ := t.reader.Peek(14) // "Content-Length" is 14 chars
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
 
-	// Check for Content-Length header (LSP-style framing)
-	if strings.HasPrefix(string(peek), "Content-Length") {
-		return t.recvContentLength(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		// Peek at the first few bytes to detect framing
+		peek, _ := t.reader.Peek(14) // "Content-Length" is 14 chars
+
+		// Check for Content-Length header (LSP-style framing)
+		if strings.HasPrefix(string(peek), "Content-Length") {
+			return t.recvContentLength(ctx)
+		}
+
+		// Fallback to newline-delimited JSON
+		return t.recvLine(ctx)
 	}
-
-	// Fallback to newline-delimited JSON
-	return t.recvLine(ctx)
 }
 
 func (t *StdioTransport) recvContentLength(ctx context.Context) (*Message, error) {
@@ -126,28 +138,35 @@ func (t *StdioTransport) recvContentLength(ctx context.Context) (*Message, error
 }
 
 func (t *StdioTransport) recvLine(ctx context.Context) (*Message, error) {
-	line, err := t.reader.ReadString('\n')
-	if err != nil {
-		return nil, fmt.Errorf("read message: %w", err)
-	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 
-	line = strings.TrimSpace(line)
-	if line == "" {
-		// Skip empty lines and try again
-		return t.Recv(ctx)
-	}
+		line, err := t.reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("read message: %w", err)
+		}
 
-	// Ignore non-JSON lines (like debug output)
-	if !strings.HasPrefix(line, "{") {
-		return t.Recv(ctx)
-	}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 
-	var msg Message
-	if err := json.Unmarshal([]byte(line), &msg); err != nil {
-		return nil, fmt.Errorf("unmarshal message: %w", err)
-	}
+		// Ignore non-JSON lines (like debug output)
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
 
-	return &msg, nil
+		var msg Message
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			return nil, fmt.Errorf("unmarshal message: %w", err)
+		}
+
+		return &msg, nil
+	}
 }
 
 // Close is a no-op for stdio transport.
