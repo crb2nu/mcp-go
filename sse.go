@@ -12,6 +12,8 @@ import (
 )
 
 // SSEServer manages SSE sessions for an MCP server.
+// Deprecated: Use StreamableHTTPServer for new implementations.
+// See https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
 type SSEServer struct {
 	server *Server
 	mu     sync.RWMutex

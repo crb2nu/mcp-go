@@ -193,6 +193,20 @@ func (s *Server) RunWithTransport(ctx context.Context, transport Transport) erro
 	return s.ServeTransport(ctx, transport)
 }
 
+// ServeStreamableHTTP returns an http.Handler that serves the MCP protocol
+// over the Streamable HTTP transport. The server's handleMessage method is used
+// as the message handler, enabling reuse of existing tool dispatch logic.
+func (s *Server) ServeStreamableHTTP(cfg StreamableHTTPConfig) *StreamableHTTPServer {
+	handler := func(ctx context.Context, msg *Message) (*Message, error) {
+		return s.handleMessage(ctx, msg)
+	}
+	srv := NewStreamableHTTPServer(handler, cfg)
+	srv.SetLogger(func(msg string, args ...any) {
+		s.logger.Info(msg, args...)
+	})
+	return srv
+}
+
 // ServeTransport serves the MCP protocol over the provided transport.
 // It is safe to call this method concurrently on the same Server instance with different transports.
 func (s *Server) ServeTransport(ctx context.Context, transport Transport) error {

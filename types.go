@@ -18,13 +18,19 @@
 // Reference: https://modelcontextprotocol.io/
 package mcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // JSONRPCVersion is the JSON-RPC version used by MCP.
 const JSONRPCVersion = "2.0"
 
-// ProtocolVersion is the MCP protocol version.
+// ProtocolVersion is the MCP protocol version (legacy).
 const ProtocolVersion = "2024-11-05"
+
+// SupportedProtocolVersions lists all protocol versions this library supports.
+var SupportedProtocolVersions = []string{ProtocolVersion, ProtocolVersion20250618}
 
 // Message is the base JSON-RPC message structure.
 type Message struct {
@@ -156,6 +162,35 @@ type Content struct {
 	Data     string `json:"data,omitempty"`
 }
 
+// MarshalJSON ensures we emit required fields even when they are empty strings.
+//
+// MCP text content requires the `text` field. Using `omitempty` on a string would
+// drop it for empty outputs (e.g., commands with no stdout), which breaks strict
+// client-side validators.
+func (c Content) MarshalJSON() ([]byte, error) {
+	// Always emit the type field.
+	m := map[string]any{
+		"type": c.Type,
+	}
+
+	// For text content, `text` is required even if empty.
+	if strings.EqualFold(c.Type, "text") {
+		m["text"] = c.Text
+	} else if c.Text != "" {
+		// For non-text content, keep previous behavior.
+		m["text"] = c.Text
+	}
+
+	if c.MimeType != "" {
+		m["mimeType"] = c.MimeType
+	}
+	if c.Data != "" {
+		m["data"] = c.Data
+	}
+
+	return json.Marshal(m)
+}
+
 // Resource describes an MCP resource.
 type Resource struct {
 	URI         string `json:"uri"`
@@ -258,10 +293,10 @@ type CreateMessageParams struct {
 
 // ModelPreferences specifies model selection preferences.
 type ModelPreferences struct {
-	Hints            []ModelHint `json:"hints,omitempty"`
-	CostPriority     *float64    `json:"costPriority,omitempty"`     // 0-1
-	SpeedPriority    *float64    `json:"speedPriority,omitempty"`    // 0-1
-	IntelligencePri  *float64    `json:"intelligencePriority,omitempty"` // 0-1
+	Hints           []ModelHint `json:"hints,omitempty"`
+	CostPriority    *float64    `json:"costPriority,omitempty"`         // 0-1
+	SpeedPriority   *float64    `json:"speedPriority,omitempty"`        // 0-1
+	IntelligencePri *float64    `json:"intelligencePriority,omitempty"` // 0-1
 }
 
 // ModelHint provides hints about which model to use.
