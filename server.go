@@ -56,6 +56,8 @@ type Server struct {
 	resources    []Resource
 	resourceTmpl []ResourceTemplate
 	resourceHdlr map[string]ResourceHandler // keyed by URI or URI template
+	resourceSubs map[string]struct{}        // subscribed resource URIs
+	resourceSubM sync.RWMutex
 	prompts      []Prompt
 	promptHdlr   map[string]PromptHandler
 	transport    Transport
@@ -63,10 +65,11 @@ type Server struct {
 	validator    *Validator
 
 	// Sampling support
-	samplingEnabled  bool
-	pendingRequests  map[any]chan *Message // pending sampling requests by ID
-	pendingRequestMu sync.Mutex
-	requestIDCounter int64
+	samplingEnabled        bool
+	clientSupportsSampling bool
+	pendingRequests        map[string]chan *Message // pending sampling requests by normalized ID
+	pendingRequestMu       sync.Mutex
+	requestIDCounter       int64
 
 	// Concurrency control
 	concurrencyLimit int
@@ -85,9 +88,10 @@ func NewServer(name, version string) *Server {
 		resources:        []Resource{},
 		resourceTmpl:     []ResourceTemplate{},
 		resourceHdlr:     make(map[string]ResourceHandler),
+		resourceSubs:     make(map[string]struct{}),
 		prompts:          []Prompt{},
 		promptHdlr:       make(map[string]PromptHandler),
-		pendingRequests:  make(map[any]chan *Message),
+		pendingRequests:  make(map[string]chan *Message),
 		logger:           slog.Default(),
 		validator:        NewValidator(true),
 		concurrencyLimit: 1, // Default to sequential for backward compatibility
@@ -301,6 +305,10 @@ func (s *Server) handleMessage(ctx context.Context, msg *Message) (*Message, err
 		return s.handleResourcesList(msg)
 	case "resources/read":
 		return s.handleResourcesRead(ctx, msg)
+	case "resources/subscribe":
+		return s.handleResourcesSubscribe(msg)
+	case "resources/unsubscribe":
+		return s.handleResourcesUnsubscribe(msg)
 	case "prompts/list":
 		return s.handlePromptsList(msg)
 	case "prompts/get":
@@ -320,11 +328,12 @@ func (s *Server) handlePendingResponse(msg *Message) {
 	if msg.ID == nil {
 		return
 	}
+	key := normalizeRequestID(msg.ID)
 
 	s.pendingRequestMu.Lock()
-	ch, ok := s.pendingRequests[msg.ID]
+	ch, ok := s.pendingRequests[key]
 	if ok {
-		delete(s.pendingRequests, msg.ID)
+		delete(s.pendingRequests, key)
 	}
 	s.pendingRequestMu.Unlock()
 
@@ -337,7 +346,17 @@ func (s *Server) handlePendingResponse(msg *Message) {
 func (s *Server) handleInitialize(msg *Message) (*Message, error) {
 	s.logger.Info("client connected", "client_info", msg.Params)
 
+	var params InitializeParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return NewErrorResponse(msg.ID, InvalidParams, err.Error()), nil
+	}
+	s.clientSupportsSampling = params.Capabilities.Sampling != nil
+
 	caps := Capabilities{}
+
+	if s.samplingEnabled {
+		caps.Sampling = &SamplingCapability{}
+	}
 
 	// Advertise tools if any are registered
 	if len(s.tools) > 0 {
@@ -347,8 +366,8 @@ func (s *Server) handleInitialize(msg *Message) (*Message, error) {
 	// Advertise resources if any are registered
 	if len(s.resources) > 0 || len(s.resourceTmpl) > 0 {
 		caps.Resources = &ResourcesCapability{
-			Subscribe:   false, // TODO: implement subscriptions
-			ListChanged: false,
+			Subscribe:   true,
+			ListChanged: true,
 		}
 	}
 
@@ -513,21 +532,25 @@ func (s *Server) CreateMessage(ctx context.Context, params CreateMessageParams) 
 	if !s.samplingEnabled {
 		return nil, fmt.Errorf("sampling not enabled on server")
 	}
+	if !s.clientSupportsSampling {
+		return nil, fmt.Errorf("client does not support sampling")
+	}
 
 	// Generate unique request ID
 	id := atomic.AddInt64(&s.requestIDCounter, 1)
 
 	// Create response channel
 	responseCh := make(chan *Message, 1)
+	key := normalizeRequestID(id)
 
 	s.pendingRequestMu.Lock()
-	s.pendingRequests[id] = responseCh
+	s.pendingRequests[key] = responseCh
 	s.pendingRequestMu.Unlock()
 
 	// Clean up on exit
 	defer func() {
 		s.pendingRequestMu.Lock()
-		delete(s.pendingRequests, id)
+		delete(s.pendingRequests, key)
 		s.pendingRequestMu.Unlock()
 	}()
 
@@ -641,6 +664,41 @@ func (s *Server) handleResourcesRead(ctx context.Context, msg *Message) (*Messag
 	return NewResponse(msg.ID, result)
 }
 
+func (s *Server) handleResourcesSubscribe(msg *Message) (*Message, error) {
+	var params SubscribeResourceParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return NewErrorResponse(msg.ID, InvalidParams, err.Error()), nil
+	}
+	if params.URI == "" {
+		return NewErrorResponse(msg.ID, InvalidParams, "missing uri"), nil
+	}
+	if !s.resourceExists(params.URI) {
+		return NewErrorResponse(msg.ID, InvalidParams, fmt.Sprintf("unknown resource: %s", params.URI)), nil
+	}
+
+	s.resourceSubM.Lock()
+	s.resourceSubs[params.URI] = struct{}{}
+	s.resourceSubM.Unlock()
+
+	return NewResponse(msg.ID, EmptyResult{})
+}
+
+func (s *Server) handleResourcesUnsubscribe(msg *Message) (*Message, error) {
+	var params UnsubscribeResourceParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return NewErrorResponse(msg.ID, InvalidParams, err.Error()), nil
+	}
+	if params.URI == "" {
+		return NewErrorResponse(msg.ID, InvalidParams, "missing uri"), nil
+	}
+
+	s.resourceSubM.Lock()
+	delete(s.resourceSubs, params.URI)
+	s.resourceSubM.Unlock()
+
+	return NewResponse(msg.ID, EmptyResult{})
+}
+
 // matchResourceTemplate finds a handler for a URI by matching against templates.
 // Simple implementation that checks if URI starts with the template prefix.
 func (s *Server) matchResourceTemplate(uri string) ResourceHandler {
@@ -655,6 +713,13 @@ func (s *Server) matchResourceTemplate(uri string) ResourceHandler {
 	return nil
 }
 
+func (s *Server) resourceExists(uri string) bool {
+	if _, ok := s.resourceHdlr[uri]; ok {
+		return true
+	}
+	return s.matchResourceTemplate(uri) != nil
+}
+
 // extractTemplatePrefix extracts the static prefix before the first template variable.
 func extractTemplatePrefix(template string) string {
 	for i, c := range template {
@@ -663,6 +728,43 @@ func extractTemplatePrefix(template string) string {
 		}
 	}
 	return template
+}
+
+func normalizeRequestID(id any) string {
+	return fmt.Sprintf("%v", id)
+}
+
+// NotifyResourceUpdated sends notifications/resources/updated for subscribed resources.
+func (s *Server) NotifyResourceUpdated(ctx context.Context, uri string) error {
+	if s.transport == nil {
+		return fmt.Errorf("no transport available")
+	}
+
+	s.resourceSubM.RLock()
+	_, subscribed := s.resourceSubs[uri]
+	s.resourceSubM.RUnlock()
+	if !subscribed {
+		return nil
+	}
+
+	notification, err := NewRequest(nil, "notifications/resources/updated", ResourceUpdatedNotification{URI: uri})
+	if err != nil {
+		return err
+	}
+	return s.transport.Send(ctx, notification)
+}
+
+// NotifyResourcesListChanged sends notifications/resources/list_changed.
+func (s *Server) NotifyResourcesListChanged(ctx context.Context) error {
+	if s.transport == nil {
+		return fmt.Errorf("no transport available")
+	}
+
+	notification, err := NewRequest(nil, "notifications/resources/list_changed", nil)
+	if err != nil {
+		return err
+	}
+	return s.transport.Send(ctx, notification)
 }
 
 func (s *Server) handlePromptsList(msg *Message) (*Message, error) {

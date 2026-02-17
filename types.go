@@ -228,6 +228,16 @@ type ReadResourceParams struct {
 	URI string `json:"uri"`
 }
 
+// SubscribeResourceParams are the parameters for resources/subscribe.
+type SubscribeResourceParams struct {
+	URI string `json:"uri"`
+}
+
+// UnsubscribeResourceParams are the parameters for resources/unsubscribe.
+type UnsubscribeResourceParams struct {
+	URI string `json:"uri"`
+}
+
 // ResourceContents represents the contents of a resource.
 type ResourceContents struct {
 	URI      string `json:"uri"`
@@ -239,6 +249,14 @@ type ResourceContents struct {
 // ReadResourceResult is the result of resources/read.
 type ReadResourceResult struct {
 	Contents []ResourceContents `json:"contents"`
+}
+
+// EmptyResult is a generic empty JSON-RPC result object.
+type EmptyResult struct{}
+
+// ResourceUpdatedNotification is sent when a subscribed resource changes.
+type ResourceUpdatedNotification struct {
+	URI string `json:"uri"`
 }
 
 // GetPromptParams are the parameters for prompts/get.

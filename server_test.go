@@ -21,7 +21,7 @@ func TestServer_Concurrency(t *testing.T) {
 	// Add a slow tool
 	var slowStarted sync.WaitGroup
 	slowStarted.Add(1)
-	
+
 	srv.AddTool(Tool{Name: "slow"}, func(ctx context.Context, args map[string]any) (*CallToolResult, error) {
 		slowStarted.Done()
 		time.Sleep(100 * time.Millisecond)
@@ -56,10 +56,10 @@ func TestServer_Concurrency(t *testing.T) {
 	// Read responses
 	// We expect the fast response to arrive BEFORE the slow response finishes (approx 100ms)
 	// Since we are using a pipe, we need to read loop to find the right ID if they arrive out of order (though pipe preserves order of send, the server processing is concurrent)
-	
+
 	// Actually, since we want to verify concurrency, we want to receive the fast response quickly.
 	// If sequential, fast response would block behind slow response.
-	
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -78,7 +78,7 @@ func TestServer_Concurrency(t *testing.T) {
 						id = int64(idInt)
 					}
 				}
-				
+
 				if id == 2 {
 					// Fast response received
 					if time.Since(start) > 80*time.Millisecond {
@@ -368,6 +368,7 @@ func TestServer_Initialize_Capabilities(t *testing.T) {
 	clientTransport, serverTransport := NewPipeTransport()
 
 	srv := NewServer("test", "1.0.0")
+	srv.EnableSampling()
 
 	// Add a tool, resource, and prompt
 	srv.AddTool(Tool{Name: "test"}, func(ctx context.Context, args map[string]any) (*CallToolResult, error) {
@@ -411,8 +412,17 @@ func TestServer_Initialize_Capabilities(t *testing.T) {
 	if result.Capabilities.Resources == nil {
 		t.Error("expected resources capability")
 	}
+	if result.Capabilities.Resources != nil && !result.Capabilities.Resources.Subscribe {
+		t.Error("expected resources subscribe capability")
+	}
+	if result.Capabilities.Resources != nil && !result.Capabilities.Resources.ListChanged {
+		t.Error("expected resources listChanged capability")
+	}
 	if result.Capabilities.Prompts == nil {
 		t.Error("expected prompts capability")
+	}
+	if result.Capabilities.Sampling == nil {
+		t.Error("expected sampling capability")
 	}
 }
 
@@ -565,5 +575,244 @@ func TestServer_StreamingTool(t *testing.T) {
 
 	if len(result.Content) == 0 || result.Content[0].Text != "Process complete" {
 		t.Errorf("unexpected result: %+v", result)
+	}
+}
+
+func TestServer_SamplingCreateMessage(t *testing.T) {
+	clientTransport, serverTransport := NewPipeTransport()
+	srv := NewServer("test", "1.0.0")
+	srv.EnableSampling()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go srv.RunWithTransport(ctx, serverTransport)
+
+	// Initialize with client sampling capability enabled.
+	initReq, _ := NewRequest(1, "initialize", InitializeParams{
+		ProtocolVersion: ProtocolVersion,
+		ClientInfo:      ClientInfo{Name: "test-client", Version: "1.0.0"},
+		Capabilities: Capabilities{
+			Sampling: &SamplingCapability{},
+		},
+	})
+	if err := clientTransport.Send(ctx, initReq); err != nil {
+		t.Fatalf("initialize send: %v", err)
+	}
+	if _, err := clientTransport.Recv(ctx); err != nil {
+		t.Fatalf("initialize recv: %v", err)
+	}
+
+	// Request sampling from the server side.
+	resultCh := make(chan *CreateMessageResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := srv.CreateMessage(ctx, CreateMessageParams{
+			Messages: []SamplingMessage{{
+				Role:    "user",
+				Content: Content{Type: "text", Text: "Hello"},
+			}},
+			MaxTokens: 32,
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resultCh <- res
+	}()
+
+	// Client receives sampling/createMessage request.
+	msg, err := clientTransport.Recv(ctx)
+	if err != nil {
+		t.Fatalf("recv sampling request: %v", err)
+	}
+	if msg.Method != "sampling/createMessage" {
+		t.Fatalf("expected sampling/createMessage, got %s", msg.Method)
+	}
+
+	var params CreateMessageParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		t.Fatalf("unmarshal sampling params: %v", err)
+	}
+	if len(params.Messages) != 1 || params.Messages[0].Content.Text != "Hello" {
+		t.Fatalf("unexpected sampling params: %+v", params)
+	}
+
+	// Client sends sampling response.
+	resp, err := NewResponse(msg.ID, CreateMessageResult{
+		Role:       "assistant",
+		Content:    Content{Type: "text", Text: "Hi there"},
+		Model:      "test-model",
+		StopReason: "endTurn",
+	})
+	if err != nil {
+		t.Fatalf("create response: %v", err)
+	}
+	if err := clientTransport.Send(ctx, resp); err != nil {
+		t.Fatalf("send sampling response: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("CreateMessage returned error: %v", err)
+	case result := <-resultCh:
+		if result.Content.Text != "Hi there" {
+			t.Fatalf("unexpected sampling text: %s", result.Content.Text)
+		}
+		if result.Model != "test-model" {
+			t.Fatalf("unexpected sampling model: %s", result.Model)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for CreateMessage result")
+	}
+}
+
+func TestServer_CreateMessage_ClientDoesNotSupportSampling(t *testing.T) {
+	clientTransport, serverTransport := NewPipeTransport()
+	srv := NewServer("test", "1.0.0")
+	srv.EnableSampling()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go srv.RunWithTransport(ctx, serverTransport)
+
+	// Initialize without client sampling capability.
+	initReq, _ := NewRequest(1, "initialize", InitializeParams{
+		ProtocolVersion: ProtocolVersion,
+		ClientInfo:      ClientInfo{Name: "test-client", Version: "1.0.0"},
+		Capabilities:    Capabilities{},
+	})
+	if err := clientTransport.Send(ctx, initReq); err != nil {
+		t.Fatalf("initialize send: %v", err)
+	}
+	if _, err := clientTransport.Recv(ctx); err != nil {
+		t.Fatalf("initialize recv: %v", err)
+	}
+
+	_, err := srv.CreateMessage(ctx, CreateMessageParams{
+		Messages: []SamplingMessage{{
+			Role:    "user",
+			Content: Content{Type: "text", Text: "Hello"},
+		}},
+		MaxTokens: 32,
+	})
+	if err == nil {
+		t.Fatal("expected error when client does not support sampling")
+	}
+	if !strings.Contains(err.Error(), "client does not support sampling") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestServer_HandlePendingResponse_NormalizesNumericIDs(t *testing.T) {
+	srv := NewServer("test", "1.0.0")
+	ch := make(chan *Message, 1)
+
+	// Simulate a pending request stored with an integer ID.
+	srv.pendingRequestMu.Lock()
+	srv.pendingRequests["1"] = ch
+	srv.pendingRequestMu.Unlock()
+
+	// Simulate a decoded JSON response where numeric IDs are float64.
+	resp := &Message{
+		JSONRPC: JSONRPCVersion,
+		ID:      float64(1),
+		Result:  json.RawMessage(`{"ok":true}`),
+	}
+	srv.handlePendingResponse(resp)
+
+	select {
+	case got := <-ch:
+		if got.ID != float64(1) {
+			t.Fatalf("unexpected response id: %#v", got.ID)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for pending response")
+	}
+}
+
+func TestServer_Resources_SubscribeNotifyUnsubscribe(t *testing.T) {
+	clientTransport, serverTransport := NewPipeTransport()
+	srv := NewServer("test", "1.0.0")
+
+	uri := "test://known"
+	srv.AddResource(Resource{URI: uri}, func(ctx context.Context, gotURI string) (*ReadResourceResult, error) {
+		return TextResource(gotURI, "data"), nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go srv.RunWithTransport(ctx, serverTransport)
+
+	// Subscribe to resource updates.
+	subReq, _ := NewRequest(1, "resources/subscribe", SubscribeResourceParams{URI: uri})
+	if err := clientTransport.Send(ctx, subReq); err != nil {
+		t.Fatalf("subscribe send: %v", err)
+	}
+	subResp, err := clientTransport.Recv(ctx)
+	if err != nil {
+		t.Fatalf("subscribe recv: %v", err)
+	}
+	if subResp.Error != nil {
+		t.Fatalf("subscribe returned error: %s", subResp.Error.Message)
+	}
+
+	// Notify list changed.
+	if err := srv.NotifyResourcesListChanged(ctx); err != nil {
+		t.Fatalf("notify list changed: %v", err)
+	}
+	listChanged, err := clientTransport.Recv(ctx)
+	if err != nil {
+		t.Fatalf("recv list changed: %v", err)
+	}
+	if listChanged.Method != "notifications/resources/list_changed" {
+		t.Fatalf("unexpected list changed method: %s", listChanged.Method)
+	}
+	if listChanged.ID != nil {
+		t.Fatalf("expected notification without id, got: %#v", listChanged.ID)
+	}
+
+	// Notify resource updated.
+	if err := srv.NotifyResourceUpdated(ctx, uri); err != nil {
+		t.Fatalf("notify resource updated: %v", err)
+	}
+	updated, err := clientTransport.Recv(ctx)
+	if err != nil {
+		t.Fatalf("recv resource updated: %v", err)
+	}
+	if updated.Method != "notifications/resources/updated" {
+		t.Fatalf("unexpected updated method: %s", updated.Method)
+	}
+	var notif ResourceUpdatedNotification
+	if err := json.Unmarshal(updated.Params, &notif); err != nil {
+		t.Fatalf("unmarshal updated notification: %v", err)
+	}
+	if notif.URI != uri {
+		t.Fatalf("unexpected updated URI: %s", notif.URI)
+	}
+
+	// Unsubscribe.
+	unsubReq, _ := NewRequest(2, "resources/unsubscribe", UnsubscribeResourceParams{URI: uri})
+	if err := clientTransport.Send(ctx, unsubReq); err != nil {
+		t.Fatalf("unsubscribe send: %v", err)
+	}
+	unsubResp, err := clientTransport.Recv(ctx)
+	if err != nil {
+		t.Fatalf("unsubscribe recv: %v", err)
+	}
+	if unsubResp.Error != nil {
+		t.Fatalf("unsubscribe returned error: %s", unsubResp.Error.Message)
+	}
+
+	// Updates should no longer be delivered after unsubscribe.
+	if err := srv.NotifyResourceUpdated(ctx, uri); err != nil {
+		t.Fatalf("notify after unsubscribe: %v", err)
+	}
+	recvCtx, recvCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer recvCancel()
+	if msg, err := clientTransport.Recv(recvCtx); err == nil {
+		t.Fatalf("expected no post-unsubscribe notification, got method=%s id=%v", msg.Method, msg.ID)
 	}
 }
