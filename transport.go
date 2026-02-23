@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Transport defines the interface for MCP message transport.
@@ -18,6 +19,12 @@ type Transport interface {
 	Recv(ctx context.Context) (*Message, error)
 	// Close closes the transport.
 	Close() error
+}
+
+// recvResult carries a message or error from the background reader goroutine.
+type recvResult struct {
+	msg *Message
+	err error
 }
 
 // StdioTransport implements MCP transport over stdio using newline-delimited JSON.
@@ -41,21 +48,28 @@ type StdioTransport struct {
 	reader           *bufio.Reader
 	writer           io.Writer
 	rawReader        io.Reader // original reader, retained for closing
-	readMu           sync.Mutex
 	writeMu          sync.Mutex
-	useContentLength bool // mirror client's framing on send
+	useContentLength atomic.Bool // mirror client's framing on send
 	done             chan struct{}
 	closeOnce        sync.Once
+	msgCh            chan recvResult // background reader publishes here
+	readerWg         sync.WaitGroup  // tracks background reader goroutine
 }
 
 // NewStdioTransport creates a new stdio transport.
+// A background goroutine is started to read messages from the reader.
+// Call Close to stop the goroutine and release resources.
 func NewStdioTransport(r io.Reader, w io.Writer) *StdioTransport {
-	return &StdioTransport{
+	t := &StdioTransport{
 		reader:    bufio.NewReader(r),
 		writer:    w,
 		rawReader: r,
 		done:      make(chan struct{}),
+		msgCh:     make(chan recvResult, 1),
 	}
+	t.readerWg.Add(1)
+	go t.readLoop()
+	return t
 }
 
 // Send sends a message, mirroring the client's framing style.
@@ -76,7 +90,7 @@ func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("marshal message: %w", err)
 	}
 
-	if t.useContentLength {
+	if t.useContentLength.Load() {
 		header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
 		if _, err := t.writer.Write([]byte(header)); err != nil {
 			return fmt.Errorf("write header: %w", err)
@@ -98,39 +112,42 @@ func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
 
 // Recv receives a message.
 // Supports both Content-Length framing (LSP-style) and newline-delimited JSON.
-// The blocking read runs in a goroutine so the call respects context cancellation
-// and Close(). Canceling the context or calling Close forces the underlying reader
-// closed, permanently terminating the transport.
+// A background goroutine handles blocking reads, so context cancellation only
+// aborts the current Recv call — the transport remains usable for subsequent calls.
+// Call Close to permanently terminate the transport.
 func (t *StdioTransport) Recv(ctx context.Context) (*Message, error) {
-	t.readMu.Lock()
-	defer t.readMu.Unlock()
-
 	select {
 	case <-t.done:
 		return nil, fmt.Errorf("transport closed")
 	default:
 	}
 
-	type recvResult struct {
-		msg *Message
-		err error
-	}
-	ch := make(chan recvResult, 1)
-	go func() {
-		msg, err := t.recvBlocking()
-		ch <- recvResult{msg, err}
-	}()
-
 	select {
-	case r := <-ch:
+	case r := <-t.msgCh:
 		return r.msg, r.err
 	case <-ctx.Done():
-		t.Close() // close reader to unblock goroutine
-		<-ch      // wait for goroutine to finish
 		return nil, ctx.Err()
 	case <-t.done:
-		<-ch // reader already closing, drain goroutine
 		return nil, fmt.Errorf("transport closed")
+	}
+}
+
+// readLoop is a persistent goroutine that reads messages from the underlying
+// reader and publishes them to msgCh. This decouples blocking I/O from
+// context cancellation — canceling a Recv context no longer destroys the
+// transport.
+func (t *StdioTransport) readLoop() {
+	defer t.readerWg.Done()
+	for {
+		msg, err := t.recvBlocking()
+		select {
+		case t.msgCh <- recvResult{msg, err}:
+		case <-t.done:
+			return
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 
@@ -141,7 +158,7 @@ func (t *StdioTransport) recvBlocking() (*Message, error) {
 	peek, _ := t.reader.Peek(14) // "Content-Length" is 14 chars
 
 	if strings.HasPrefix(string(peek), "Content-Length") {
-		t.useContentLength = true
+		t.useContentLength.Store(true)
 		return t.recvContentLength()
 	}
 
@@ -211,7 +228,8 @@ func (t *StdioTransport) recvLine() (*Message, error) {
 }
 
 // Close closes the transport, terminating any in-progress Recv.
-// It closes the underlying reader and writer if they implement io.Closer.
+// It closes the underlying reader and writer if they implement io.Closer,
+// then waits for the background reader goroutine to exit.
 // Close is safe to call multiple times.
 func (t *StdioTransport) Close() error {
 	var firstErr error
@@ -228,6 +246,7 @@ func (t *StdioTransport) Close() error {
 			}
 		}
 	})
+	t.readerWg.Wait()
 	return firstErr
 }
 

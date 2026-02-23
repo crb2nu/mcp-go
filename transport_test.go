@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ func TestStdioTransportRecv_IgnoresNonJSONLines(t *testing.T) {
 	t.Cleanup(func() { _ = w.Close() })
 
 	tr := NewStdioTransport(r, io.Discard)
+	t.Cleanup(func() { _ = tr.Close() })
 
 	go func() {
 		_, _ = io.WriteString(w, "debug: hello\n")
@@ -107,6 +109,7 @@ func TestStdioTransport_SharedReaderInterleaving(t *testing.T) {
 	t.Cleanup(func() { _ = w.Close() })
 
 	shared := NewStdioTransport(r, io.Discard)
+	t.Cleanup(func() { _ = shared.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -170,6 +173,7 @@ func TestStdioTransportRecv_ContextCancel(t *testing.T) {
 	t.Cleanup(func() { _ = w.Close() })
 
 	tr := NewStdioTransport(r, io.Discard)
+	t.Cleanup(func() { _ = tr.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -191,6 +195,49 @@ func TestStdioTransportRecv_ContextCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Recv did not return after context cancellation")
+	}
+}
+
+// TestStdioTransportRecv_ReusableAfterCancel verifies that the transport
+// remains functional after a context cancellation. This is the key behavioral
+// change from DEBT-009: context cancel no longer destroys the transport.
+func TestStdioTransportRecv_ReusableAfterCancel(t *testing.T) {
+	r, w := io.Pipe()
+	t.Cleanup(func() { _ = r.Close() })
+	t.Cleanup(func() { _ = w.Close() })
+
+	var sendBuf bytes.Buffer
+	tr := NewStdioTransport(r, &sendBuf)
+	t.Cleanup(func() { _ = tr.Close() })
+
+	// Recv with short timeout — no data available, should return ctx error.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel1()
+	_, err := tr.Recv(ctx1)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("first Recv: expected DeadlineExceeded, got: %v", err)
+	}
+
+	// Write a message — transport should still be alive.
+	go func() {
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"method":"ping"}`+"\n")
+	}()
+
+	// Second Recv should succeed.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	msg, err := tr.Recv(ctx2)
+	if err != nil {
+		t.Fatalf("second Recv: unexpected error: %v", err)
+	}
+	if msg.Method != "ping" {
+		t.Fatalf("msg.Method = %q, want %q", msg.Method, "ping")
+	}
+
+	// Send should also still work.
+	resp := &Message{JSONRPC: JSONRPCVersion, ID: msg.ID, Result: []byte(`{"ok":true}`)}
+	if err := tr.Send(context.Background(), resp); err != nil {
+		t.Fatalf("Send after cancel: %v", err)
 	}
 }
 
@@ -262,6 +309,7 @@ func TestStdioTransportRecv_Concurrent(t *testing.T) {
 	t.Cleanup(func() { _ = w.Close() })
 
 	tr := NewStdioTransport(r, io.Discard)
+	t.Cleanup(func() { _ = tr.Close() })
 
 	const n = 50
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
