@@ -164,6 +164,98 @@ func TestPipeTransport_IDCorrelation(t *testing.T) {
 	}
 }
 
+func TestStdioTransportRecv_ContextCancel(t *testing.T) {
+	r, w := io.Pipe()
+	t.Cleanup(func() { _ = r.Close() })
+	t.Cleanup(func() { _ = w.Close() })
+
+	tr := NewStdioTransport(r, io.Discard)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := tr.Recv(ctx)
+		done <- err
+	}()
+
+	// Let the goroutine start its blocking read.
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("expected context.Canceled, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Recv did not return after context cancellation")
+	}
+}
+
+func TestStdioTransportClose_ClosesUnderlying(t *testing.T) {
+	r, w := io.Pipe()
+
+	tr := NewStdioTransport(r, w)
+
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	// Reader should be closed.
+	buf := make([]byte, 1)
+	if _, err := r.Read(buf); err == nil {
+		t.Fatal("expected error reading from closed pipe reader")
+	}
+
+	// Writer should be closed.
+	if _, err := w.Write([]byte("x")); err == nil {
+		t.Fatal("expected error writing to closed pipe writer")
+	}
+
+	// Close is idempotent.
+	if err := tr.Close(); err != nil {
+		t.Fatalf("second Close() error: %v", err)
+	}
+}
+
+func TestStdioTransportRecv_AfterClose(t *testing.T) {
+	r, w := io.Pipe()
+	t.Cleanup(func() { _ = r.Close() })
+	t.Cleanup(func() { _ = w.Close() })
+
+	tr := NewStdioTransport(r, io.Discard)
+	_ = tr.Close()
+
+	ctx := context.Background()
+	_, err := tr.Recv(ctx)
+	if err == nil {
+		t.Fatal("expected error from Recv after Close")
+	}
+	if err.Error() != "transport closed" {
+		t.Fatalf("expected 'transport closed', got: %v", err)
+	}
+}
+
+func TestStdioTransportSend_AfterClose(t *testing.T) {
+	r, w := io.Pipe()
+	t.Cleanup(func() { _ = r.Close() })
+	t.Cleanup(func() { _ = w.Close() })
+
+	tr := NewStdioTransport(r, w)
+	_ = tr.Close()
+
+	msg := &Message{JSONRPC: JSONRPCVersion, Method: "ping"}
+	err := tr.Send(context.Background(), msg)
+	if err == nil {
+		t.Fatal("expected error from Send after Close")
+	}
+	if err.Error() != "transport closed" {
+		t.Fatalf("expected 'transport closed', got: %v", err)
+	}
+}
+
 func TestStdioTransportRecv_Concurrent(t *testing.T) {
 	r, w := io.Pipe()
 	t.Cleanup(func() { _ = r.Close() })

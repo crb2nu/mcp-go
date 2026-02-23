@@ -38,22 +38,36 @@ type Transport interface {
 //
 // Reference: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
 type StdioTransport struct {
-	reader  *bufio.Reader
-	writer  io.Writer
-	readMu  sync.Mutex
-	writeMu sync.Mutex
+	reader           *bufio.Reader
+	writer           io.Writer
+	rawReader        io.Reader // original reader, retained for closing
+	readMu           sync.Mutex
+	writeMu          sync.Mutex
+	useContentLength bool // mirror client's framing on send
+	done             chan struct{}
+	closeOnce        sync.Once
 }
 
 // NewStdioTransport creates a new stdio transport.
 func NewStdioTransport(r io.Reader, w io.Writer) *StdioTransport {
 	return &StdioTransport{
-		reader: bufio.NewReader(r),
-		writer: w,
+		reader:    bufio.NewReader(r),
+		writer:    w,
+		rawReader: r,
+		done:      make(chan struct{}),
 	}
 }
 
-// Send sends a message using newline-delimited JSON.
+// Send sends a message, mirroring the client's framing style.
+// If the client sent Content-Length headers, responses use the same framing.
+// Otherwise, newline-delimited JSON is used.
 func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
+	select {
+	case <-t.done:
+		return fmt.Errorf("transport closed")
+	default:
+	}
+
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 
@@ -62,11 +76,21 @@ func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("marshal message: %w", err)
 	}
 
-	if _, err := t.writer.Write(data); err != nil {
-		return fmt.Errorf("write body: %w", err)
-	}
-	if _, err := t.writer.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("write newline: %w", err)
+	if t.useContentLength {
+		header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
+		if _, err := t.writer.Write([]byte(header)); err != nil {
+			return fmt.Errorf("write header: %w", err)
+		}
+		if _, err := t.writer.Write(data); err != nil {
+			return fmt.Errorf("write body: %w", err)
+		}
+	} else {
+		if _, err := t.writer.Write(data); err != nil {
+			return fmt.Errorf("write body: %w", err)
+		}
+		if _, err := t.writer.Write([]byte("\n")); err != nil {
+			return fmt.Errorf("write newline: %w", err)
+		}
 	}
 
 	return nil
@@ -74,32 +98,57 @@ func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
 
 // Recv receives a message.
 // Supports both Content-Length framing (LSP-style) and newline-delimited JSON.
+// The blocking read runs in a goroutine so the call respects context cancellation
+// and Close(). Canceling the context or calling Close forces the underlying reader
+// closed, permanently terminating the transport.
 func (t *StdioTransport) Recv(ctx context.Context) (*Message, error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
+	select {
+	case <-t.done:
+		return nil, fmt.Errorf("transport closed")
+	default:
+	}
 
-		// Peek at the first few bytes to detect framing
-		peek, _ := t.reader.Peek(14) // "Content-Length" is 14 chars
+	type recvResult struct {
+		msg *Message
+		err error
+	}
+	ch := make(chan recvResult, 1)
+	go func() {
+		msg, err := t.recvBlocking()
+		ch <- recvResult{msg, err}
+	}()
 
-		// Check for Content-Length header (LSP-style framing)
-		if strings.HasPrefix(string(peek), "Content-Length") {
-			return t.recvContentLength(ctx)
-		}
-
-		// Fallback to newline-delimited JSON
-		return t.recvLine(ctx)
+	select {
+	case r := <-ch:
+		return r.msg, r.err
+	case <-ctx.Done():
+		t.Close() // close reader to unblock goroutine
+		<-ch      // wait for goroutine to finish
+		return nil, ctx.Err()
+	case <-t.done:
+		<-ch // reader already closing, drain goroutine
+		return nil, fmt.Errorf("transport closed")
 	}
 }
 
-func (t *StdioTransport) recvContentLength(ctx context.Context) (*Message, error) {
-	// Read headers
+// recvBlocking performs the blocking read without context awareness.
+// Context/close handling is done by the caller via the done channel.
+func (t *StdioTransport) recvBlocking() (*Message, error) {
+	// Peek at the first few bytes to detect framing
+	peek, _ := t.reader.Peek(14) // "Content-Length" is 14 chars
+
+	if strings.HasPrefix(string(peek), "Content-Length") {
+		t.useContentLength = true
+		return t.recvContentLength()
+	}
+
+	return t.recvLine()
+}
+
+func (t *StdioTransport) recvContentLength() (*Message, error) {
 	var contentLength int64
 	for {
 		line, err := t.reader.ReadString('\n')
@@ -109,7 +158,7 @@ func (t *StdioTransport) recvContentLength(ctx context.Context) (*Message, error
 		line = strings.TrimRight(line, "\r\n")
 
 		if line == "" {
-			break // End of headers
+			break
 		}
 
 		if strings.HasPrefix(line, "Content-Length: ") {
@@ -123,7 +172,6 @@ func (t *StdioTransport) recvContentLength(ctx context.Context) (*Message, error
 		return nil, fmt.Errorf("invalid content length: %d", contentLength)
 	}
 
-	// Read body
 	body := make([]byte, contentLength)
 	if _, err := io.ReadFull(t.reader, body); err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
@@ -137,14 +185,8 @@ func (t *StdioTransport) recvContentLength(ctx context.Context) (*Message, error
 	return &msg, nil
 }
 
-func (t *StdioTransport) recvLine(ctx context.Context) (*Message, error) {
+func (t *StdioTransport) recvLine() (*Message, error) {
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
 		line, err := t.reader.ReadString('\n')
 		if err != nil {
 			return nil, fmt.Errorf("read message: %w", err)
@@ -155,7 +197,6 @@ func (t *StdioTransport) recvLine(ctx context.Context) (*Message, error) {
 			continue
 		}
 
-		// Ignore non-JSON lines (like debug output)
 		if !strings.HasPrefix(line, "{") {
 			continue
 		}
@@ -169,9 +210,25 @@ func (t *StdioTransport) recvLine(ctx context.Context) (*Message, error) {
 	}
 }
 
-// Close is a no-op for stdio transport.
+// Close closes the transport, terminating any in-progress Recv.
+// It closes the underlying reader and writer if they implement io.Closer.
+// Close is safe to call multiple times.
 func (t *StdioTransport) Close() error {
-	return nil
+	var firstErr error
+	t.closeOnce.Do(func() {
+		close(t.done)
+		if c, ok := t.rawReader.(io.Closer); ok {
+			if err := c.Close(); err != nil {
+				firstErr = err
+			}
+		}
+		if c, ok := t.writer.(io.Closer); ok {
+			if err := c.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	})
+	return firstErr
 }
 
 // PipeTransport is an in-memory transport for testing.
