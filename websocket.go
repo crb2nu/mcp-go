@@ -128,6 +128,7 @@ func (t *WebSocketTransport) Recv(ctx context.Context) (*Message, error) {
 
 // Close closes the WebSocket connection.
 func (t *WebSocketTransport) Close() error {
+	t.initialized = false
 	return t.conn.Close()
 }
 
