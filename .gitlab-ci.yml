@@ -16,6 +16,8 @@ variables:
 lint:
   extends: .go-lint
   image: golang:1.25.5
+  script:
+    - go vet ./...
 
 test:
   extends: .go-test
