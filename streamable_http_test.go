@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -249,9 +251,10 @@ func TestStreamableHTTP_OriginValidation(t *testing.T) {
 	}
 }
 
-func TestStreamableHTTP_GETReturns405(t *testing.T) {
+func TestStreamableHTTP_GETReturns405WhenDisabled(t *testing.T) {
 	mux := http.NewServeMux()
 	cfg := DefaultStreamableHTTPConfig()
+	// SSEEnabled defaults to false
 	srv := NewStreamableHTTPServer(echoHandler, cfg)
 	mux.Handle("/mcp", srv)
 	ts := httptest.NewServer(mux)
@@ -417,5 +420,435 @@ func TestStreamableHTTP_ReapExpiredSessions(t *testing.T) {
 
 	if srv.SessionCount() != 0 {
 		t.Fatalf("expected 0 sessions after reap, got %d", srv.SessionCount())
+	}
+}
+
+// --- SSE GET endpoint tests ---
+
+// newSSETestServer creates a test server with SSE enabled and returns
+// the httptest.Server, the StreamableHTTPServer, and an initialized session ID.
+func newSSETestServer(t *testing.T) (*httptest.Server, *StreamableHTTPServer, string) {
+	t.Helper()
+	mux := http.NewServeMux()
+	cfg := DefaultStreamableHTTPConfig()
+	cfg.SSEEnabled = true
+	cfg.SSEKeepaliveInterval = 100 * time.Millisecond // fast for tests
+	cfg.NotificationBufferSize = 16
+	srv := NewStreamableHTTPServer(echoHandler, cfg)
+	mux.Handle("/mcp", srv)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	// Initialize to get a session ID.
+	initMsg, _ := NewRequest(1, "initialize", InitializeParams{
+		ProtocolVersion: ProtocolVersion20250618,
+	})
+	resp := postJSON(t, ts.URL, initMsg, "")
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+	if sessionID == "" {
+		t.Fatal("expected session ID from initialize")
+	}
+	return ts, srv, sessionID
+}
+
+// doSSEGet opens an SSE GET connection and returns the response.
+// The caller must close resp.Body.
+func doSSEGet(t *testing.T, url, sessionID string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url+"/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// readSSEEvent reads one SSE event from an SSE stream.
+// Returns the event type and data fields. Skips comment lines.
+func readSSEEvent(t *testing.T, scanner *bufio.Scanner) (eventType, data string) {
+	t.Helper()
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			// End of event block.
+			if eventType != "" || data != "" {
+				return eventType, data
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			// Comment (e.g., keepalive). Return it as a special event type.
+			return "comment", strings.TrimPrefix(line, ": ")
+		}
+		if strings.HasPrefix(line, "event: ") {
+			eventType = strings.TrimPrefix(line, "event: ")
+		} else if strings.HasPrefix(line, "data: ") {
+			data = strings.TrimPrefix(line, "data: ")
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanner error: %v", err)
+	}
+	return "", ""
+}
+
+func TestStreamableHTTP_GETReturnsSSEStream(t *testing.T) {
+	ts, _, sessionID := newSSETestServer(t)
+
+	resp := doSSEGet(t, ts.URL, sessionID)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("expected Content-Type text/event-stream, got %q", ct)
+	}
+
+	cc := resp.Header.Get("Cache-Control")
+	if cc != "no-cache" {
+		t.Fatalf("expected Cache-Control no-cache, got %q", cc)
+	}
+}
+
+func TestStreamableHTTP_GETRequiresSession(t *testing.T) {
+	mux := http.NewServeMux()
+	cfg := DefaultStreamableHTTPConfig()
+	cfg.SSEEnabled = true
+	srv := NewStreamableHTTPServer(echoHandler, cfg)
+	mux.Handle("/mcp", srv)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Missing session header.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/mcp", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing session, got %d", resp.StatusCode)
+	}
+
+	// Invalid session ID.
+	req2, _ := http.NewRequest(http.MethodGet, ts.URL+"/mcp", nil)
+	req2.Header.Set("Accept", "text/event-stream")
+	req2.Header.Set("Mcp-Session-Id", "nonexistent-session")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for invalid session, got %d", resp2.StatusCode)
+	}
+}
+
+func TestStreamableHTTP_SendNotification(t *testing.T) {
+	ts, srv, sessionID := newSSETestServer(t)
+
+	// Open SSE stream in a goroutine and read events.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/mcp", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Give the SSE stream a moment to establish.
+	time.Sleep(20 * time.Millisecond)
+
+	// Send a notification.
+	notifMsg := &Message{
+		JSONRPC: JSONRPCVersion,
+		Method:  "notifications/test",
+	}
+	if err := srv.SendNotification(sessionID, notifMsg); err != nil {
+		t.Fatalf("SendNotification failed: %v", err)
+	}
+
+	// Read the SSE event.
+	scanner := bufio.NewScanner(resp.Body)
+	eventType, data := readSSEEvent(t, scanner)
+	if eventType != "message" {
+		t.Fatalf("expected event type 'message', got %q", eventType)
+	}
+
+	var received Message
+	if err := json.Unmarshal([]byte(data), &received); err != nil {
+		t.Fatalf("failed to unmarshal SSE data: %v", err)
+	}
+	if received.Method != "notifications/test" {
+		t.Fatalf("expected method 'notifications/test', got %q", received.Method)
+	}
+}
+
+func TestStreamableHTTP_BroadcastNotification(t *testing.T) {
+	mux := http.NewServeMux()
+	cfg := DefaultStreamableHTTPConfig()
+	cfg.SSEEnabled = true
+	cfg.SSEKeepaliveInterval = 5 * time.Second // long enough to not interfere
+	cfg.NotificationBufferSize = 16
+	srv := NewStreamableHTTPServer(echoHandler, cfg)
+	mux.Handle("/mcp", srv)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Create two sessions.
+	var sessionIDs [2]string
+	for i := range sessionIDs {
+		initMsg, _ := NewRequest(i+1, "initialize", InitializeParams{
+			ProtocolVersion: ProtocolVersion20250618,
+		})
+		resp := postJSON(t, ts.URL, initMsg, "")
+		sessionIDs[i] = resp.Header.Get("Mcp-Session-Id")
+		resp.Body.Close()
+		if sessionIDs[i] == "" {
+			t.Fatalf("session %d: expected session ID", i)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Open SSE streams for both sessions.
+	var responses [2]*http.Response
+	for i, sid := range sessionIDs {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/mcp", nil)
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Mcp-Session-Id", sid)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			t.Fatalf("session %d: expected 200, got %d", i, resp.StatusCode)
+		}
+		responses[i] = resp
+		defer resp.Body.Close()
+	}
+
+	// Give SSE streams time to establish.
+	time.Sleep(20 * time.Millisecond)
+
+	// Broadcast a notification.
+	broadcastMsg := &Message{
+		JSONRPC: JSONRPCVersion,
+		Method:  "notifications/broadcast",
+	}
+	srv.BroadcastNotification(broadcastMsg)
+
+	// Verify both sessions receive the notification.
+	var wg sync.WaitGroup
+	for i, resp := range responses {
+		wg.Add(1)
+		go func(idx int, r *http.Response) {
+			defer wg.Done()
+			scanner := bufio.NewScanner(r.Body)
+			eventType, data := readSSEEvent(t, scanner)
+			if eventType != "message" {
+				t.Errorf("session %d: expected event type 'message', got %q", idx, eventType)
+				return
+			}
+			var received Message
+			if err := json.Unmarshal([]byte(data), &received); err != nil {
+				t.Errorf("session %d: failed to unmarshal: %v", idx, err)
+				return
+			}
+			if received.Method != "notifications/broadcast" {
+				t.Errorf("session %d: expected method 'notifications/broadcast', got %q", idx, received.Method)
+			}
+		}(i, resp)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for broadcast notifications")
+	}
+}
+
+func TestStreamableHTTP_SSEKeepalive(t *testing.T) {
+	ts, _, sessionID := newSSETestServer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/mcp", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// The SSEKeepaliveInterval is 100ms in the test server.
+	// Read an event; it should be a keepalive comment within ~200ms.
+	scanner := bufio.NewScanner(resp.Body)
+	eventType, data := readSSEEvent(t, scanner)
+	if eventType != "comment" {
+		t.Fatalf("expected comment (keepalive), got event type %q data %q", eventType, data)
+	}
+	if data != "keepalive" {
+		t.Fatalf("expected keepalive comment, got %q", data)
+	}
+}
+
+func TestStreamableHTTP_SSEClosedOnSessionDelete(t *testing.T) {
+	ts, _, sessionID := newSSETestServer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/mcp", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Give the SSE stream time to establish.
+	time.Sleep(20 * time.Millisecond)
+
+	// DELETE the session.
+	delReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/mcp", nil)
+	delReq.Header.Set("Mcp-Session-Id", sessionID)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on DELETE, got %d", delResp.StatusCode)
+	}
+
+	// The SSE stream's notifCh was closed; reading should terminate.
+	// Try to read — the scanner should finish without producing more events
+	// or the body should reach EOF quickly.
+	scanner := bufio.NewScanner(resp.Body)
+	done := make(chan struct{})
+	go func() {
+		// Drain any remaining data.
+		for scanner.Scan() {
+			// consume
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Stream closed as expected.
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSE stream did not close after session delete")
+	}
+}
+
+func TestStreamableHTTP_SingleSSEPerSession(t *testing.T) {
+	ts, _, sessionID := newSSETestServer(t)
+
+	// Open first SSE stream.
+	resp1 := doSSEGet(t, ts.URL, sessionID)
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first GET: expected 200, got %d", resp1.StatusCode)
+	}
+
+	// Give first stream time to establish.
+	time.Sleep(20 * time.Millisecond)
+
+	// Second GET should return 409.
+	resp2 := doSSEGet(t, ts.URL, sessionID)
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("second GET: expected 409, got %d", resp2.StatusCode)
+	}
+}
+
+func TestStreamableHTTP_SendNotification_SessionNotFound(t *testing.T) {
+	cfg := DefaultStreamableHTTPConfig()
+	cfg.SSEEnabled = true
+	srv := NewStreamableHTTPServer(echoHandler, cfg)
+
+	err := srv.SendNotification("nonexistent", &Message{JSONRPC: JSONRPCVersion, Method: "test"})
+	if err == nil {
+		t.Fatal("expected error for nonexistent session")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found' in error, got: %v", err)
+	}
+}
+
+func TestStreamableHTTP_SendNotification_BufferFull(t *testing.T) {
+	mux := http.NewServeMux()
+	cfg := DefaultStreamableHTTPConfig()
+	cfg.SSEEnabled = true
+	cfg.NotificationBufferSize = 2 // tiny buffer
+	srv := NewStreamableHTTPServer(echoHandler, cfg)
+	mux.Handle("/mcp", srv)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Initialize to get a session.
+	initMsg, _ := NewRequest(1, "initialize", InitializeParams{
+		ProtocolVersion: ProtocolVersion20250618,
+	})
+	resp := postJSON(t, ts.URL, initMsg, "")
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+
+	// Fill the buffer without connecting an SSE client.
+	msg := &Message{JSONRPC: JSONRPCVersion, Method: "test"}
+	for i := 0; i < 2; i++ {
+		if err := srv.SendNotification(sessionID, msg); err != nil {
+			t.Fatalf("send %d: unexpected error: %v", i, err)
+		}
+	}
+
+	// Third should fail (buffer full).
+	err := srv.SendNotification(sessionID, msg)
+	if err == nil {
+		t.Fatal("expected error for full buffer")
+	}
+	if !strings.Contains(err.Error(), "buffer full") {
+		t.Fatalf("expected 'buffer full' in error, got: %v", err)
 	}
 }

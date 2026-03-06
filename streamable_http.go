@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,15 +44,29 @@ type StreamableHTTPConfig struct {
 	// Requests exceeding this limit receive HTTP 413 (Request Entity Too Large).
 	// Defaults to DefaultMaxRequestBodySize (10 MB). Set to -1 to disable the limit.
 	MaxRequestBodySize int64
+
+	// SSEEnabled enables the GET SSE endpoint for server-initiated messages.
+	// When false (default), GET returns 405.
+	SSEEnabled bool
+
+	// SSEKeepaliveInterval is the interval for SSE keepalive comments.
+	// Defaults to 30 seconds.
+	SSEKeepaliveInterval time.Duration
+
+	// NotificationBufferSize is the per-session notification buffer size.
+	// Defaults to 64.
+	NotificationBufferSize int
 }
 
 // DefaultStreamableHTTPConfig returns sensible defaults.
 func DefaultStreamableHTTPConfig() StreamableHTTPConfig {
 	return StreamableHTTPConfig{
-		SessionRequired:    true,
-		SessionTimeout:     30 * time.Minute,
-		MaxSessions:        1000,
-		MaxRequestBodySize: DefaultMaxRequestBodySize,
+		SessionRequired:        true,
+		SessionTimeout:         30 * time.Minute,
+		MaxSessions:            1000,
+		MaxRequestBodySize:     DefaultMaxRequestBodySize,
+		SSEKeepaliveInterval:   30 * time.Second,
+		NotificationBufferSize: 64,
 	}
 }
 
@@ -69,12 +85,23 @@ type httpSession struct {
 	lastAccess  time.Time
 	initialized bool
 	mu          sync.Mutex
+
+	// SSE fields for server-initiated messages.
+	notifCh   chan *Message // buffered channel for server-initiated messages
+	sseActive atomic.Bool   // true when a GET SSE client is connected
+	closeOnce sync.Once     // guard for closing notifCh
 }
 
 // NewStreamableHTTPServer creates a new Streamable HTTP server.
 func NewStreamableHTTPServer(handler MessageHandler, cfg StreamableHTTPConfig) *StreamableHTTPServer {
 	if cfg.SessionTimeout == 0 {
 		cfg.SessionTimeout = 30 * time.Minute
+	}
+	if cfg.SSEKeepaliveInterval == 0 {
+		cfg.SSEKeepaliveInterval = 30 * time.Second
+	}
+	if cfg.NotificationBufferSize <= 0 {
+		cfg.NotificationBufferSize = 64
 	}
 	return &StreamableHTTPServer{
 		handler: handler,
@@ -99,8 +126,7 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	case http.MethodPost:
 		s.handlePOST(w, r)
 	case http.MethodGet:
-		// Server-initiated messages deferred; return 405.
-		http.Error(w, "GET not supported (server-initiated messages not implemented)", http.StatusMethodNotAllowed)
+		s.handleGET(w, r)
 	case http.MethodDelete:
 		s.handleDELETE(w, r)
 	case http.MethodOptions:
@@ -174,11 +200,16 @@ func (s *StreamableHTTPServer) handlePOST(w http.ResponseWriter, r *http.Request
 		}
 
 		// Create session
+		bufSize := s.config.NotificationBufferSize
+		if bufSize <= 0 {
+			bufSize = 64
+		}
 		session := &httpSession{
 			id:          uuid.New().String(),
 			createdAt:   time.Now(),
 			lastAccess:  time.Now(),
 			initialized: true,
+			notifCh:     make(chan *Message, bufSize),
 		}
 
 		// Enforce max sessions
@@ -248,10 +279,16 @@ func (s *StreamableHTTPServer) handleDELETE(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if _, ok := s.sessions.LoadAndDelete(sessionID); !ok {
+	val, ok := s.sessions.LoadAndDelete(sessionID)
+	if !ok {
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
 	}
+
+	session := val.(*httpSession)
+	session.closeOnce.Do(func() {
+		close(session.notifCh)
+	})
 
 	s.log("session deleted", "session_id", sessionID)
 	w.WriteHeader(http.StatusOK)
@@ -302,6 +339,9 @@ func (s *StreamableHTTPServer) ReapExpiredSessions() int {
 		session.mu.Unlock()
 		if idle > s.config.SessionTimeout {
 			s.sessions.Delete(key)
+			session.closeOnce.Do(func() {
+				close(session.notifCh)
+			})
 			s.log("session expired", "session_id", session.id, "idle", idle)
 			reaped++
 		}
@@ -330,6 +370,137 @@ func (s *StreamableHTTPServer) GetSession(sessionID string) (createdAt, lastAcce
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	return session.createdAt, session.lastAccess, true
+}
+
+func (s *StreamableHTTPServer) handleGET(w http.ResponseWriter, r *http.Request) {
+	if !s.config.SSEEnabled {
+		http.Error(w, "GET not supported (SSE not enabled)", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Validate Accept header.
+	accept := r.Header.Get("Accept")
+	if !strings.Contains(accept, "text/event-stream") && !strings.Contains(accept, "*/*") {
+		http.Error(w, "Accept must include text/event-stream", http.StatusNotAcceptable)
+		return
+	}
+
+	// Validate Origin (DNS rebinding protection).
+	if !s.validateOrigin(r) {
+		http.Error(w, "Origin not allowed", http.StatusForbidden)
+		return
+	}
+
+	// Validate session.
+	sessionID := r.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		http.Error(w, "Mcp-Session-Id header required", http.StatusBadRequest)
+		return
+	}
+	val, ok := s.sessions.Load(sessionID)
+	if !ok {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+	session := val.(*httpSession)
+
+	// Enforce single SSE stream per session via atomic CAS.
+	if !session.sseActive.CompareAndSwap(false, true) {
+		http.Error(w, "SSE stream already active for this session", http.StatusConflict)
+		return
+	}
+	defer session.sseActive.Store(false)
+
+	// Update last access.
+	session.mu.Lock()
+	session.lastAccess = time.Now()
+	session.mu.Unlock()
+
+	// Verify streaming support.
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Set SSE headers.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	s.log("SSE stream opened", "session_id", sessionID)
+
+	ticker := time.NewTicker(s.config.SSEKeepaliveInterval)
+	defer ticker.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			s.log("SSE stream closed (client disconnected)", "session_id", sessionID)
+			return
+		case msg, open := <-session.notifCh:
+			if !open {
+				s.log("SSE stream closed (session removed)", "session_id", sessionID)
+				return
+			}
+			if err := s.writeSSEEvent(w, flusher, msg); err != nil {
+				s.log("SSE write error", "session_id", sessionID, "error", err)
+				return
+			}
+		case <-ticker.C:
+			if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {
+				s.log("SSE keepalive write error", "session_id", sessionID, "error", err)
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// writeSSEEvent marshals a Message as JSON and writes it as an SSE event.
+func (s *StreamableHTTPServer) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, msg *Message) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal SSE event: %w", err)
+	}
+	if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", data); err != nil {
+		return fmt.Errorf("write SSE event: %w", err)
+	}
+	flusher.Flush()
+	return nil
+}
+
+// SendNotification queues a notification for delivery to a session's SSE stream.
+// Non-blocking: returns error if session not found or buffer full.
+func (s *StreamableHTTPServer) SendNotification(sessionID string, msg *Message) error {
+	val, ok := s.sessions.Load(sessionID)
+	if !ok {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+	session := val.(*httpSession)
+	select {
+	case session.notifCh <- msg:
+		return nil
+	default:
+		return fmt.Errorf("notification buffer full for session %q", sessionID)
+	}
+}
+
+// BroadcastNotification sends a notification to all active sessions.
+// Drops notifications for sessions with full buffers.
+func (s *StreamableHTTPServer) BroadcastNotification(msg *Message) {
+	s.sessions.Range(func(_, value any) bool {
+		session := value.(*httpSession)
+		select {
+		case session.notifCh <- msg:
+		default:
+			s.log("notification dropped (buffer full)", "session_id", session.id)
+		}
+		return true
+	})
 }
 
 // isMaxBytesError reports whether err was caused by http.MaxBytesReader.
