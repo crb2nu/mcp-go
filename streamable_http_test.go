@@ -331,6 +331,61 @@ func TestStreamableHTTP_ClientTransportRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStreamableHTTP_OversizedRequestBody(t *testing.T) {
+	mux := http.NewServeMux()
+	cfg := DefaultStreamableHTTPConfig()
+	cfg.MaxRequestBodySize = 64 // tiny limit for testing
+	cfg.SessionRequired = false
+	srv := NewStreamableHTTPServer(echoHandler, cfg)
+	mux.Handle("/mcp", srv)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Build a body that exceeds the 64-byte limit.
+	oversized := strings.Repeat("x", 128)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/mcp", strings.NewReader(oversized))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 Request Entity Too Large, got %d", resp.StatusCode)
+	}
+}
+
+func TestStreamableHTTP_RequestBodyWithinLimit(t *testing.T) {
+	mux := http.NewServeMux()
+	cfg := DefaultStreamableHTTPConfig()
+	cfg.MaxRequestBodySize = 4096 // generous limit
+	cfg.SessionRequired = false
+	srv := NewStreamableHTTPServer(echoHandler, cfg)
+	mux.Handle("/mcp", srv)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// A normal-sized initialize request should succeed.
+	initMsg, _ := NewRequest(1, "initialize", InitializeParams{
+		ProtocolVersion: ProtocolVersion20250618,
+		Capabilities:    Capabilities{},
+		ClientInfo:      ClientInfo{Name: "test-client", Version: "1.0"},
+	})
+
+	resp := postJSON(t, ts.URL, initMsg, "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for request within limit, got %d", resp.StatusCode)
+	}
+}
+
 func TestStreamableHTTP_ReapExpiredSessions(t *testing.T) {
 	cfg := DefaultStreamableHTTPConfig()
 	cfg.SessionTimeout = 10 * time.Millisecond

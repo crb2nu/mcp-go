@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -19,6 +20,9 @@ const ProtocolVersion20250618 = "2025-06-18"
 // Used by StreamableHTTPServer to bridge HTTP requests to the daemon's message dispatch.
 type MessageHandler func(ctx context.Context, msg *Message) (*Message, error)
 
+// DefaultMaxRequestBodySize is the default maximum request body size (10 MB).
+const DefaultMaxRequestBodySize int64 = 10 << 20
+
 // StreamableHTTPConfig configures the Streamable HTTP server.
 type StreamableHTTPConfig struct {
 	// AllowedOrigins restricts which origins can connect (DNS rebinding protection).
@@ -33,14 +37,20 @@ type StreamableHTTPConfig struct {
 
 	// MaxSessions limits the number of concurrent sessions (0 = unlimited).
 	MaxSessions int
+
+	// MaxRequestBodySize limits the size of incoming request bodies in bytes.
+	// Requests exceeding this limit receive HTTP 413 (Request Entity Too Large).
+	// Defaults to DefaultMaxRequestBodySize (10 MB). Set to -1 to disable the limit.
+	MaxRequestBodySize int64
 }
 
 // DefaultStreamableHTTPConfig returns sensible defaults.
 func DefaultStreamableHTTPConfig() StreamableHTTPConfig {
 	return StreamableHTTPConfig{
-		SessionRequired: true,
-		SessionTimeout:  30 * time.Minute,
-		MaxSessions:     1000,
+		SessionRequired:    true,
+		SessionTimeout:     30 * time.Minute,
+		MaxSessions:        1000,
+		MaxRequestBodySize: DefaultMaxRequestBodySize,
 	}
 }
 
@@ -124,9 +134,16 @@ func (s *StreamableHTTPServer) handlePOST(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Read body
+	// Enforce request body size limit.
+	if s.config.MaxRequestBodySize >= 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, s.config.MaxRequestBodySize)
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
@@ -315,3 +332,8 @@ func (s *StreamableHTTPServer) GetSession(sessionID string) (createdAt, lastAcce
 	return session.createdAt, session.lastAccess, true
 }
 
+// isMaxBytesError reports whether err was caused by http.MaxBytesReader.
+func isMaxBytesError(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
