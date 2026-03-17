@@ -3,6 +3,8 @@ include:
   - project: 'platform/gitops'
     file: '/ci/templates/go.yml'
 
+  - project: 'services/tech-radar'
+    file: '/ci/radar.yml'
 stages: [lint, test, build]
 
 default:
@@ -30,3 +32,6 @@ build:
   image: golang:1.25.5
   script:
     - go build ./...
+
+radar-scan:
+  extends: .radar-scan
