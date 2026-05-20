@@ -34,12 +34,12 @@ func TestServer_Concurrency(t *testing.T) {
 	})
 
 	// Start server in background
-	go srv.RunWithTransport(context.Background(), serverTransport)
+	go func() { _ = srv.RunWithTransport(context.Background(), serverTransport) }()
 
 	// Send slow request
 	go func() {
 		req, _ := NewRequest(1, "tools/call", CallToolParams{Name: "slow"})
-		clientTransport.Send(context.Background(), req)
+		_ = clientTransport.Send(context.Background(), req)
 	}()
 
 	// Wait for slow request to actually start processing
@@ -126,12 +126,12 @@ func TestServer_Sequential(t *testing.T) {
 		return TextResult("ok"), nil
 	})
 
-	go srv.RunWithTransport(context.Background(), serverTransport)
+	go func() { _ = srv.RunWithTransport(context.Background(), serverTransport) }()
 
 	// Send multiple requests
 	for i := 0; i < 5; i++ {
 		req, _ := NewRequest(int64(i), "tools/call", CallToolParams{Name: "check"})
-		clientTransport.Send(context.Background(), req)
+		_ = clientTransport.Send(context.Background(), req)
 	}
 
 	// Consume responses
@@ -173,7 +173,7 @@ func TestServer_Resources(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Test resources/list
 	req, _ := NewRequest(1, "resources/list", nil)
@@ -287,7 +287,7 @@ func TestServer_Prompts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Test prompts/list
 	req, _ := NewRequest(1, "prompts/list", nil)
@@ -384,7 +384,7 @@ func TestServer_Initialize_Capabilities(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Send initialize
 	req, _ := NewRequest(1, "initialize", InitializeParams{
@@ -437,7 +437,7 @@ func TestServer_Resources_UnknownURI(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Request unknown resource
 	req, _ := NewRequest(1, "resources/read", ReadResourceParams{URI: "test://unknown"})
@@ -469,7 +469,7 @@ func TestServer_Prompts_UnknownPrompt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Request unknown prompt
 	req, _ := NewRequest(1, "prompts/get", GetPromptParams{Name: "unknown"})
@@ -521,7 +521,7 @@ func TestServer_StreamingTool(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Call the streaming tool
 	start := time.Now()
@@ -586,7 +586,7 @@ func TestServer_SamplingCreateMessage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Initialize with client sampling capability enabled.
 	initReq, _ := NewRequest(1, "initialize", InitializeParams{
@@ -675,7 +675,7 @@ func TestServer_CreateMessage_ClientDoesNotSupportSampling(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Initialize without client sampling capability.
 	initReq, _ := NewRequest(1, "initialize", InitializeParams{
@@ -744,7 +744,7 @@ func TestServer_Resources_SubscribeNotifyUnsubscribe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go srv.RunWithTransport(ctx, serverTransport)
+	go func() { _ = srv.RunWithTransport(ctx, serverTransport) }()
 
 	// Subscribe to resource updates.
 	subReq, _ := NewRequest(1, "resources/subscribe", SubscribeResourceParams{URI: uri})

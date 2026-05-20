@@ -87,7 +87,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, msg *Message) error 
 	if err != nil {
 		return fmt.Errorf("HTTP POST: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Capture session ID from initialize response
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
@@ -171,7 +171,7 @@ func (t *StreamableHTTPTransport) Close() error {
 		if err != nil {
 			return err
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	return nil

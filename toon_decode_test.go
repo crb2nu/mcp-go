@@ -264,7 +264,7 @@ func TestDecodeTOONToJSON(t *testing.T) {
 
 	expectedJSON, _ := json.Marshal(input)
 	var expected map[string]any
-	json.Unmarshal(expectedJSON, &expected)
+	_ = json.Unmarshal(expectedJSON, &expected)
 
 	assertJSONEqual(t, expected, got)
 }
@@ -428,8 +428,8 @@ func assertRoundTrip(t *testing.T, v any) {
 
 	// Parse both into generic structures for deep comparison.
 	var expected, got any
-	json.Unmarshal(expectedJSON, &expected)
-	json.Unmarshal(gotJSON, &got)
+	_ = json.Unmarshal(expectedJSON, &expected)
+	_ = json.Unmarshal(gotJSON, &got)
 
 	assertJSONEqual(t, expected, got)
 }

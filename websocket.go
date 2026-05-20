@@ -212,7 +212,7 @@ func (c *WebSocketClient) GetConnection(ctx context.Context, serverName string) 
 			return conn, nil
 		}
 		// Connection exists but not initialized, close and recreate
-		conn.Close()
+		_ = conn.Close()
 		delete(c.conns, serverName)
 	}
 
@@ -237,7 +237,7 @@ func (c *WebSocketClient) GetConnection(ctx context.Context, serverName string) 
 
 		// Initialize MCP protocol
 		if err := conn.Initialize(ctx); err != nil {
-			conn.Close()
+			_ = conn.Close()
 			lastErr = fmt.Errorf("init attempt %d: %w", attempt+1, err)
 			continue
 		}
@@ -253,7 +253,7 @@ func (c *WebSocketClient) GetConnection(ctx context.Context, serverName string) 
 func (c *WebSocketClient) Reconnect(ctx context.Context, serverName string) (*WebSocketTransport, error) {
 	c.mu.Lock()
 	if conn, ok := c.conns[serverName]; ok {
-		conn.Close()
+		_ = conn.Close()
 		delete(c.conns, serverName)
 	}
 	c.mu.Unlock()
@@ -267,7 +267,7 @@ func (c *WebSocketClient) CloseConnection(serverName string) {
 	defer c.mu.Unlock()
 
 	if conn, ok := c.conns[serverName]; ok {
-		conn.Close()
+		_ = conn.Close()
 		delete(c.conns, serverName)
 	}
 }
@@ -278,13 +278,28 @@ func (c *WebSocketClient) Close() error {
 	defer c.mu.Unlock()
 
 	for name, conn := range c.conns {
-		conn.Close()
+		_ = conn.Close()
 		delete(c.conns, name)
 	}
 	return nil
 }
 
-// Dial implements an interface for connection pooling.
+// Dial implements an interface for connection pooling. It always builds
+// a fresh, initialized WebSocketTransport — pool callers maintain their
+// own bucket of independent *Conn entries and must NOT share an underlying
+// websocket.Conn. Returning the c.conns-cached transport (as GetConnection
+// does) caused pool entries to alias the same socket, so one caller's
+// "mark unhealthy + Close" left every other caller's Send hitting
+// "use of closed network connection". Pool semantics require independent
+// transports — Close()'ing one must not affect any other.
 func (c *WebSocketClient) Dial(ctx context.Context, serverName string) (Transport, error) {
-	return c.GetConnection(ctx, serverName)
+	transport, err := NewWebSocketTransport(ctx, c.cfg, serverName)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	if err := transport.Initialize(ctx); err != nil {
+		_ = transport.Close()
+		return nil, fmt.Errorf("initialize: %w", err)
+	}
+	return transport, nil
 }

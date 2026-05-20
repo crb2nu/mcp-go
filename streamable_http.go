@@ -173,7 +173,7 @@ func (s *StreamableHTTPServer) handlePOST(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	if len(body) == 0 {
 		http.Error(w, "Empty request body", http.StatusBadRequest)
@@ -324,7 +324,7 @@ func (s *StreamableHTTPServer) writeJSON(w http.ResponseWriter, status int, msg 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 // ReapExpiredSessions removes sessions that have been idle longer than the timeout.
