@@ -166,7 +166,7 @@ func (p *Pool) Put(conn *Conn) {
 	if p.closed || !conn.Healthy {
 		p.activeCount[conn.ServerName]--
 		p.stats.ActiveConns--
-		conn.Transport.Close()
+		_ = conn.Transport.Close()
 		return
 	}
 
@@ -174,7 +174,7 @@ func (p *Pool) Put(conn *Conn) {
 	if len(p.conns[conn.ServerName]) >= p.maxIdle {
 		p.activeCount[conn.ServerName]--
 		p.stats.ActiveConns--
-		conn.Transport.Close()
+		_ = conn.Transport.Close()
 		return
 	}
 
@@ -197,7 +197,7 @@ func (p *Pool) Close() error {
 
 	for _, conns := range p.conns {
 		for _, conn := range conns {
-			conn.Transport.Close()
+			_ = conn.Transport.Close()
 		}
 	}
 	p.conns = nil
@@ -228,7 +228,7 @@ func (p *Pool) reapLoop() {
 			var keep []*Conn
 			for _, conn := range conns {
 				if now.Sub(conn.LastUsed) > p.idleTimeout {
-					conn.Transport.Close()
+					_ = conn.Transport.Close()
 					p.stats.IdleConns--
 				} else {
 					keep = append(keep, conn)

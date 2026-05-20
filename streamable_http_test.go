@@ -26,15 +26,6 @@ func echoHandler(ctx context.Context, msg *Message) (*Message, error) {
 	return NewErrorResponse(msg.ID, MethodNotFound, "unknown method"), nil
 }
 
-func newTestServer(t *testing.T, handler MessageHandler) (*httptest.Server, *StreamableHTTPServer) {
-	t.Helper()
-	cfg := DefaultStreamableHTTPConfig()
-	srv := NewStreamableHTTPServer(handler, cfg)
-	ts := httptest.NewServer(srv)
-	t.Cleanup(ts.Close)
-	return ts, srv
-}
-
 func postJSON(t *testing.T, url string, msg *Message, sessionID string) *http.Response {
 	t.Helper()
 	body, err := json.Marshal(msg)
@@ -72,7 +63,7 @@ func TestStreamableHTTP_InitializeRoundTrip(t *testing.T) {
 	})
 
 	resp := postJSON(t, ts.URL, initMsg, "")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -116,12 +107,12 @@ func TestStreamableHTTP_NotificationReturns202(t *testing.T) {
 	})
 	initResp := postJSON(t, ts.URL, initMsg, "")
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 
 	// Send notification (no ID)
 	notif := &Message{JSONRPC: "2.0", Method: "notifications/initialized"}
 	resp := postJSON(t, ts.URL, notif, sessionID)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("expected 202 Accepted, got %d", resp.StatusCode)
@@ -140,7 +131,7 @@ func TestStreamableHTTP_SessionRequired(t *testing.T) {
 	// Send a non-initialize request without session ID
 	pingMsg, _ := NewRequest(2, "ping", nil)
 	resp := postJSON(t, ts.URL, pingMsg, "")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 without session, got %d", resp.StatusCode)
@@ -157,7 +148,7 @@ func TestStreamableHTTP_InvalidSession(t *testing.T) {
 
 	pingMsg, _ := NewRequest(2, "ping", nil)
 	resp := postJSON(t, ts.URL, pingMsg, "nonexistent-session")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for invalid session, got %d", resp.StatusCode)
@@ -178,7 +169,7 @@ func TestStreamableHTTP_SessionDelete(t *testing.T) {
 	})
 	initResp := postJSON(t, ts.URL, initMsg, "")
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
-	initResp.Body.Close()
+	_ = initResp.Body.Close()
 
 	// DELETE the session
 	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/mcp", nil)
@@ -187,7 +178,7 @@ func TestStreamableHTTP_SessionDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delResp.Body.Close()
+	_ = delResp.Body.Close()
 
 	if delResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 on DELETE, got %d", delResp.StatusCode)
@@ -196,7 +187,7 @@ func TestStreamableHTTP_SessionDelete(t *testing.T) {
 	// Verify session is gone
 	pingMsg, _ := NewRequest(2, "ping", nil)
 	resp := postJSON(t, ts.URL, pingMsg, sessionID)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 after session delete, got %d", resp.StatusCode)
@@ -228,7 +219,7 @@ func TestStreamableHTTP_OriginValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 for bad origin, got %d", resp.StatusCode)
@@ -244,7 +235,7 @@ func TestStreamableHTTP_OriginValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for good origin, got %d", resp2.StatusCode)
@@ -264,7 +255,7 @@ func TestStreamableHTTP_GETReturns405WhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", resp.StatusCode)
@@ -282,7 +273,7 @@ func TestStreamableHTTP_ClientTransportRoundTrip(t *testing.T) {
 	transport := NewStreamableHTTPTransport(StreamableHTTPClientConfig{
 		Endpoint: ts.URL + "/mcp",
 	})
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -357,7 +348,7 @@ func TestStreamableHTTP_OversizedRequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413 Request Entity Too Large, got %d", resp.StatusCode)
@@ -382,7 +373,7 @@ func TestStreamableHTTP_RequestBodyWithinLimit(t *testing.T) {
 	})
 
 	resp := postJSON(t, ts.URL, initMsg, "")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for request within limit, got %d", resp.StatusCode)
@@ -404,7 +395,7 @@ func TestStreamableHTTP_ReapExpiredSessions(t *testing.T) {
 		ProtocolVersion: ProtocolVersion20250618,
 	})
 	resp := postJSON(t, ts.URL, initMsg, "")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if srv.SessionCount() != 1 {
 		t.Fatalf("expected 1 session, got %d", srv.SessionCount())
@@ -445,7 +436,7 @@ func newSSETestServer(t *testing.T) (*httptest.Server, *StreamableHTTPServer, st
 	})
 	resp := postJSON(t, ts.URL, initMsg, "")
 	sessionID := resp.Header.Get("Mcp-Session-Id")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if sessionID == "" {
 		t.Fatal("expected session ID from initialize")
 	}
@@ -502,7 +493,7 @@ func TestStreamableHTTP_GETReturnsSSEStream(t *testing.T) {
 	ts, _, sessionID := newSSETestServer(t)
 
 	resp := doSSEGet(t, ts.URL, sessionID)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -535,7 +526,7 @@ func TestStreamableHTTP_GETRequiresSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing session, got %d", resp.StatusCode)
 	}
@@ -548,7 +539,7 @@ func TestStreamableHTTP_GETRequiresSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for invalid session, got %d", resp2.StatusCode)
 	}
@@ -568,7 +559,7 @@ func TestStreamableHTTP_SendNotification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -621,7 +612,7 @@ func TestStreamableHTTP_BroadcastNotification(t *testing.T) {
 		})
 		resp := postJSON(t, ts.URL, initMsg, "")
 		sessionIDs[i] = resp.Header.Get("Mcp-Session-Id")
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if sessionIDs[i] == "" {
 			t.Fatalf("session %d: expected session ID", i)
 		}
@@ -641,11 +632,11 @@ func TestStreamableHTTP_BroadcastNotification(t *testing.T) {
 			t.Fatal(err)
 		}
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			t.Fatalf("session %d: expected 200, got %d", i, resp.StatusCode)
 		}
 		responses[i] = resp
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 	}
 
 	// Give SSE streams time to establish.
@@ -707,7 +698,7 @@ func TestStreamableHTTP_SSEKeepalive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -738,7 +729,7 @@ func TestStreamableHTTP_SSEClosedOnSessionDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -754,7 +745,7 @@ func TestStreamableHTTP_SSEClosedOnSessionDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delResp.Body.Close()
+	_ = delResp.Body.Close()
 	if delResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 on DELETE, got %d", delResp.StatusCode)
 	}
@@ -785,7 +776,7 @@ func TestStreamableHTTP_SingleSSEPerSession(t *testing.T) {
 
 	// Open first SSE stream.
 	resp1 := doSSEGet(t, ts.URL, sessionID)
-	defer resp1.Body.Close()
+	defer func() { _ = resp1.Body.Close() }()
 
 	if resp1.StatusCode != http.StatusOK {
 		t.Fatalf("first GET: expected 200, got %d", resp1.StatusCode)
@@ -796,7 +787,7 @@ func TestStreamableHTTP_SingleSSEPerSession(t *testing.T) {
 
 	// Second GET should return 409.
 	resp2 := doSSEGet(t, ts.URL, sessionID)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	if resp2.StatusCode != http.StatusConflict {
 		t.Fatalf("second GET: expected 409, got %d", resp2.StatusCode)
@@ -833,7 +824,7 @@ func TestStreamableHTTP_SendNotification_BufferFull(t *testing.T) {
 	})
 	resp := postJSON(t, ts.URL, initMsg, "")
 	sessionID := resp.Header.Get("Mcp-Session-Id")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Fill the buffer without connecting an SSE client.
 	msg := &Message{JSONRPC: JSONRPCVersion, Method: "test"}

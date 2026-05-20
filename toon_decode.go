@@ -504,10 +504,7 @@ func isArrayHeader(s string) bool {
 		return false
 	}
 	bracketClose := strings.Index(s[bracketOpen:], "]")
-	if bracketClose < 0 {
-		return false
-	}
-	return true
+	return bracketClose >= 0
 }
 
 // splitCSVValues splits a comma-separated string, respecting quoted values.
