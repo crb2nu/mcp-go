@@ -12,25 +12,28 @@ import (
 // read presence/session payloads from an older producer. Regression for the
 // HUD "0 active agents" bug: agent_presence_list decoded from the hub failed
 // with: list array "agents": expected list item (- ...), got: "agent_id: ...".
+//
+// The live producer keeps the dash form's 4-space field indent and simply
+// drops the "-" line, so fields sit one level deeper than the dash marker.
 func TestDecodeTOON_DashlessListOfObjects(t *testing.T) {
-	// Single object — the exact shape that produced the production error.
+	// Faithful to the production payload: 2-line preamble, agents header at
+	// indent 0, object fields at indent 2 (4 spaces), no dash. This is the
+	// exact shape from the production decode error (header line 3, field
+	// line 4).
 	in := strings.Join([]string{
 		"count: 1",
 		`namespace: ""`,
 		"agents[1]:",
-		"  agent_id: codex-1713039686",
-		"  agent_type: codex",
-		"  status: active",
+		"    agent_id: codex-1713039686",
+		"    agent_type: codex",
+		"    status: active",
 	}, "\n")
 
 	v, err := DecodeTOON(in)
 	if err != nil {
 		t.Fatalf("dash-less decode failed: %v", err)
 	}
-	obj, ok := v.(map[string]any)
-	if !ok {
-		t.Fatalf("expected object root, got %T", v)
-	}
+	obj := v.(map[string]any)
 	agents, ok := obj["agents"].([]any)
 	if !ok || len(agents) != 1 {
 		t.Fatalf("expected 1 agent, got %#v", obj["agents"])
@@ -42,26 +45,27 @@ func TestDecodeTOON_DashlessListOfObjects(t *testing.T) {
 }
 
 // Multi-object, heterogeneous field sets (session_id present for some agents,
-// absent for others) and an empty nested array — faithfully reconstructed from
-// a live agent_presence_list capture. Items are delimited only by the repeated
-// first key (active_files), which is exactly what the decoder must rely on.
+// absent for others) and an empty nested array — reconstructed from a live
+// agent_presence_list capture at the real 4-space field indent. Items are
+// delimited only by the repeated first key (active_files), which is exactly
+// what the decoder must rely on.
 func TestDecodeTOON_DashlessListMultiObject(t *testing.T) {
 	dashless := strings.Join([]string{
 		"agents[3]:",
-		"  active_files[0]:",
-		"  agent_id: codex-1713039686",
-		"  agent_type: codex",
-		"  status: active",
-		"  active_files[0]:",
-		"  agent_id: claude-code-3115117524",
-		"  agent_type: claude-code",
-		`  description: "Claude Code · services/flexdeck"`,
-		"  session_id: 66f2b05a6d504d22",
-		"  status: offline",
-		"  active_files[0]:",
-		"  agent_id: claude-code-4140927246",
-		"  agent_type: claude-code",
-		"  status: active",
+		"    active_files[0]:",
+		"    agent_id: codex-1713039686",
+		"    agent_type: codex",
+		"    status: active",
+		"    active_files[0]:",
+		"    agent_id: claude-code-3115117524",
+		"    agent_type: claude-code",
+		`    description: "Claude Code · services/flexdeck"`,
+		"    session_id: 66f2b05a6d504d22",
+		"    status: offline",
+		"    active_files[0]:",
+		"    agent_id: claude-code-4140927246",
+		"    agent_type: claude-code",
+		"    status: active",
 	}, "\n")
 
 	v, err := DecodeTOON(dashless)
@@ -97,6 +101,27 @@ func TestDecodeTOON_DashlessListMultiObject(t *testing.T) {
 	// Empty nested arrays survive as empty slices, not merged away.
 	if af, ok := agents[0].(map[string]any)["active_files"].([]any); !ok || len(af) != 0 {
 		t.Fatalf("agent[0].active_files = %#v, want empty slice", agents[0].(map[string]any)["active_files"])
+	}
+}
+
+// Some producers may indent dash-less fields at the item indent (2 spaces)
+// rather than the dash form's deeper indent. The boundary detector keys off
+// the first field line's actual indent, so both must decode.
+func TestDecodeTOON_DashlessListShallowIndent(t *testing.T) {
+	in := strings.Join([]string{
+		"agents[2]:",
+		"  agent_id: a",
+		"  status: active",
+		"  agent_id: b",
+		"  status: idle",
+	}, "\n")
+	v, err := DecodeTOON(in)
+	if err != nil {
+		t.Fatalf("shallow-indent dash-less decode failed: %v", err)
+	}
+	agents := v.(map[string]any)["agents"].([]any)
+	if len(agents) != 2 || agents[0].(map[string]any)["agent_id"] != "a" || agents[1].(map[string]any)["agent_id"] != "b" {
+		t.Fatalf("shallow-indent decoded wrong: %#v", agents)
 	}
 }
 
