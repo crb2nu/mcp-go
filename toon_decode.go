@@ -409,10 +409,13 @@ func (p *toonParser) parseListArray(indent int, _ int) ([]any, error) {
 		if !strings.HasPrefix(trimmed, "- ") && trimmed != "-" {
 			// Compatibility path: some producers emit object list items as
 			// bare indented objects with no leading "-" marker (older mcp-go
-			// encoders and cross-version hub payloads do this). Rather than
-			// reject the whole document, parse the indented block as one
-			// object, splitting successive items when a key repeats.
-			obj, err := p.parseDashlessObjectItem(indent)
+			// encoders and cross-version hub payloads do this). The fields may
+			// sit at the item indent, or one level deeper — the dash form's
+			// field indent with the "-" line simply dropped (this is what the
+			// live MCP hub emits). Parse the block at its actual indent,
+			// splitting successive items on a repeated key, rather than
+			// rejecting the whole document.
+			obj, err := p.parseDashlessObjectItem(lineIndent)
 			if err != nil {
 				return nil, err
 			}
