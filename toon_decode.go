@@ -407,9 +407,17 @@ func (p *toonParser) parseListArray(indent int, _ int) ([]any, error) {
 		trimmed := strings.TrimSpace(line)
 
 		if !strings.HasPrefix(trimmed, "- ") && trimmed != "-" {
-			// Not a list item line. This might be a child of the previous item.
-			// But if we get here at indent level, it's an error.
-			return nil, fmt.Errorf("line %d: expected list item (- ...), got: %q", p.pos+1, trimmed)
+			// Compatibility path: some producers emit object list items as
+			// bare indented objects with no leading "-" marker (older mcp-go
+			// encoders and cross-version hub payloads do this). Rather than
+			// reject the whole document, parse the indented block as one
+			// object, splitting successive items when a key repeats.
+			obj, err := p.parseDashlessObjectItem(indent)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, obj)
+			continue
 		}
 
 		if trimmed == "-" {
@@ -457,6 +465,72 @@ func (p *toonParser) parseListArray(indent int, _ int) ([]any, error) {
 		result = []any{}
 	}
 	return result, nil
+}
+
+// parseDashlessObjectItem parses a single list item written as a bare indented
+// object (no leading "-"). It consumes key/value lines at exactly indent (with
+// their nested children) and stops when the block dedents, a dashed item
+// begins, or a top-level key it already parsed reappears — the last case marks
+// the start of the next item. Object keys are unique within an item, so a
+// repeat unambiguously delimits the boundary for the common case of a
+// homogeneous array of objects.
+func (p *toonParser) parseDashlessObjectItem(indent int) (map[string]any, error) {
+	obj := make(map[string]any)
+
+	for p.pos < len(p.lines) {
+		line := p.lines[p.pos]
+		if strings.TrimSpace(line) == "" {
+			p.pos++
+			continue
+		}
+
+		lineIndent := measureIndent(line)
+		if lineIndent < indent {
+			break // block ended
+		}
+		if lineIndent > indent {
+			return nil, fmt.Errorf("line %d: unexpected indentation (expected %d, got %d): %q", p.pos+1, indent, lineIndent, line)
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") || trimmed == "-" {
+			break // a dashed item begins; let the caller resume
+		}
+
+		// A repeated top-level key means the next item has started.
+		if len(obj) > 0 {
+			if key, ok := listItemKey(trimmed); ok {
+				if _, seen := obj[key]; seen {
+					break
+				}
+			}
+		}
+
+		key, value, err := p.parseKeyValueLine(trimmed, indent)
+		if err != nil {
+			return nil, err
+		}
+		obj[key] = value
+	}
+
+	return obj, nil
+}
+
+// listItemKey extracts the object key a TOON line introduces, for boundary
+// detection in parseDashlessObjectItem. It mirrors parseKeyValueLine's key
+// derivation across the simple key:value and array-header (key[N]...) forms.
+func listItemKey(trimmed string) (string, bool) {
+	if colon := findKeyColon(trimmed); colon >= 0 {
+		return unquoteToken(trimmed[:colon]), true
+	}
+	// Array-header forms (key[N]:, key[N]{...}:, key[N]: vals): findKeyColon
+	// returns -1 because it stops at '['. The key is the token before '['.
+	if bracket := strings.Index(trimmed, "["); bracket > 0 {
+		if strings.Contains(trimmed[bracket:], "]") {
+			return unquoteToken(trimmed[:bracket]), true
+		}
+	}
+	return "", false
 }
 
 // parseNestedArrayItem handles array items inside list items (e.g., nested arrays).
