@@ -33,10 +33,8 @@ func TestWebSocketTransport_CloseResetsInitialized(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 
-	transport := &WebSocketTransport{
-		conn:        conn,
-		initialized: true,
-	}
+	transport := &WebSocketTransport{conn: conn}
+	transport.initialized.Store(true)
 
 	if !transport.IsInitialized() {
 		t.Fatal("expected initialized before close")
@@ -76,10 +74,9 @@ func TestWebSocketClient_CloseConnectionRemovesCache(t *testing.T) {
 
 	client := NewWebSocketClient(WebSocketConfig{})
 	// Seed the internal cache with a connection.
-	client.conns["test-server"] = &WebSocketTransport{
-		conn:        conn,
-		initialized: true,
-	}
+	seeded := &WebSocketTransport{conn: conn}
+	seeded.initialized.Store(true)
+	client.conns["test-server"] = seeded
 
 	if len(client.conns) != 1 {
 		t.Fatalf("cache size = %d, want 1", len(client.conns))
