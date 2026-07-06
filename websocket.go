@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -160,12 +162,38 @@ func (t *WebSocketTransport) Send(ctx context.Context, msg *Message) error {
 }
 
 // Recv receives a message from WebSocket.
+//
+// Recv honors ctx: gorilla's ReadMessage blocks indefinitely on a silent peer
+// (connection open, no frame arriving) and never consults the context, so
+// without a read deadline every ctx timeout ABOVE Recv is cosmetic — a stalled
+// hub wedges the caller forever (the Mills spin-wedge / "Backend unavailable"
+// hang, where an author/tool call hung past its own 45s budget and the outer
+// 10m budget alike). gorilla honors SetReadDeadline, so we derive one from the
+// context's deadline; a ctx that carries no deadline clears any prior one so an
+// intentionally long-lived read (a notification listener) still blocks as
+// before.
 func (t *WebSocketTransport) Recv(ctx context.Context) (*Message, error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 
+	if dl, ok := ctx.Deadline(); ok {
+		_ = t.conn.SetReadDeadline(dl)
+	} else {
+		_ = t.conn.SetReadDeadline(time.Time{})
+	}
+
 	_, data, err := t.conn.ReadMessage()
 	if err != nil {
+		var nerr net.Error
+		if errors.As(err, &nerr) && nerr.Timeout() {
+			// Our ctx-derived read deadline fired: gorilla's read stream is now
+			// unusable, so mark the connection dead for the pool / mcphub to redial
+			// rather than reuse it. The raw net i/o-timeout error still surfaces so
+			// mcphub's transport-error path invalidates + retries. (Detecting the
+			// timeout on the error itself avoids a race between the net poller's
+			// read deadline and the context timer both firing at the same instant.)
+			t.markDead()
+		}
 		return nil, fmt.Errorf("read message: %w", err)
 	}
 
