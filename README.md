@@ -3,8 +3,7 @@
 
 ![Header](assets/header.svg)
 
-[![pipeline status](https://gitlab.flexinfer.ai/libs/mcp-go/badges/main/pipeline.svg)](https://gitlab.flexinfer.ai/libs/mcp-go/-/commits/main)
-[![coverage report](https://gitlab.flexinfer.ai/libs/mcp-go/badges/main/coverage.svg)](https://gitlab.flexinfer.ai/libs/mcp-go/-/commits/main)
+CI (build, tests, coverage gates) runs on self-hosted GitLab; github.com/crb2nu/mcp-go mirrors `main`. Tagged releases: `v0.2.0`.
 
 A Go SDK for building [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers.
 
@@ -16,13 +15,25 @@ MCP is a protocol for connecting AI assistants to external tools and data source
 - **Server Framework** - Simple API for registering tools and handling requests
 - **Multiple Transports** - Stdio (newline-delimited + Content-Length) and WebSocket
 - **Connection Pool** - Manage multiple MCP server connections with idle reaping
-- **Production Ready** - Battle-tested with 26+ production MCP servers
+- **Production Ready** - Battle-tested with 69 production MCP servers in the Loom ecosystem
 - **Examples** - Echo server, file server, and more in `examples/`
 
 ## Installation
 
+The module path is `gitlab.flexinfer.ai/libs/mcp-go` (the canonical
+self-hosted home; this GitHub repo is a mirror):
+
 ```bash
 go get gitlab.flexinfer.ai/libs/mcp-go
+```
+
+Working purely from the mirror? Vendor it with a `replace` directive:
+
+```go
+// go.mod
+require gitlab.flexinfer.ai/libs/mcp-go v0.2.0
+
+replace gitlab.flexinfer.ai/libs/mcp-go => github.com/crb2nu/mcp-go v0.2.0
 ```
 
 ## Quick Start
