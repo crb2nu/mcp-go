@@ -16,11 +16,12 @@ variables:
   # This repo doesn't use DinD for its Go jobs; disable that wait globally to prevent jobs hanging.
   DOCKER_HOST: ""
 
+# No `script:` override here on purpose: the shared .go-lint template runs
+# golangci-lint, which is what executes this repo's .golangci.yml (version "2").
+# A bare `go vet ./...` override silently bypasses that config entirely.
 lint:
   extends: .go-lint
   image: golang:1.25.5
-  script:
-    - go vet ./...
 
 test:
   extends: .go-test
