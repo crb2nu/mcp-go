@@ -11,15 +11,18 @@ MCP is a protocol for connecting AI assistants to external tools and data source
 
 ## Protocol version
 
-The SDK currently answers `initialize` with protocol version `2024-11-05` across leaf servers.
-Modernization to MCP `2026-07-28` (version negotiation and `structuredContent`) is tracked in
-loom-core `.loom/195-research-mcp-2026-07-28-gap-roadmap-2026-08-15.md`.
+The SDK supports MCP protocol versions `2024-11-05` and `2025-06-18`. During
+`initialize`, a leaf server echoes a supported client version; an absent or
+unknown version negotiates down to the SDK's highest supported version
+(`2025-06-18`). Streamable HTTP responses include the negotiated
+`MCP-Protocol-Version` header, while requests without that header remain
+backward compatible.
 
 ## Features
 
 - **Complete MCP Protocol** - Full JSON-RPC 2.0 + MCP type definitions
 - **Server Framework** - Simple API for registering tools and handling requests
-- **Multiple Transports** - Stdio (newline-delimited + Content-Length) and WebSocket
+- **Multiple Transports** - Stdio (newline-delimited + Content-Length), WebSocket, and Streamable HTTP (JSON responses and optional SSE notifications)
 - **Connection Pool** - Manage multiple MCP server connections with idle reaping
 - **Production Ready** - Battle-tested with 69 production MCP servers in the Loom ecosystem
 - **Examples** - Echo server, file server, and more in `examples/`

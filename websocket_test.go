@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,60 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+func TestWebSocketTransport_InitializeNegotiatesProtocolVersion(t *testing.T) {
+	for _, selected := range []string{ProtocolVersion20250618, ProtocolVersion} {
+		t.Run(selected, func(t *testing.T) {
+			offered := make(chan string, 1)
+			upgrader := websocket.Upgrader{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				_, data, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var msg Message
+				if json.Unmarshal(data, &msg) != nil {
+					return
+				}
+				var params InitializeParams
+				if json.Unmarshal(msg.Params, &params) != nil {
+					return
+				}
+				offered <- params.ProtocolVersion
+				resp, _ := NewResponse(msg.ID, InitializeResult{
+					ProtocolVersion: selected,
+					Capabilities:    Capabilities{},
+					ServerInfo:      ServerInfo{Name: "test", Version: "1.0"},
+				})
+				payload, _ := json.Marshal(resp)
+				_ = conn.WriteMessage(websocket.TextMessage, payload)
+				_, _, _ = conn.ReadMessage()
+			}))
+			defer srv.Close()
+
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := &WebSocketTransport{conn: conn, clientInfo: ClientInfo{Name: "test", Version: "1.0"}}
+			defer func() { _ = transport.Close() }()
+			if err := transport.Initialize(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if got := <-offered; got != ProtocolVersion20250618 {
+				t.Fatalf("offered %q, want %q", got, ProtocolVersion20250618)
+			}
+			if transport.protocolVersion != selected {
+				t.Fatalf("selected %q, want %q", transport.protocolVersion, selected)
+			}
+		})
+	}
+}
 
 func TestWebSocketTransport_CloseResetsInitialized(t *testing.T) {
 	// Start a minimal WebSocket server so we get a real connection.

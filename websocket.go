@@ -24,13 +24,14 @@ const (
 
 // WebSocketTransport implements MCP transport over WebSocket.
 type WebSocketTransport struct {
-	conn        *websocket.Conn
-	serverName  string
-	profile     string
-	clientInfo  ClientInfo
-	initialized atomic.Bool
-	mu          sync.Mutex
-	readMu      sync.Mutex
+	conn            *websocket.Conn
+	serverName      string
+	profile         string
+	clientInfo      ClientInfo
+	protocolVersion string
+	initialized     atomic.Bool
+	mu              sync.Mutex
+	readMu          sync.Mutex
 
 	// Durability state (atomic; safe to read/write from the keepalive goroutine
 	// concurrently with the connection pool).
@@ -287,7 +288,7 @@ func (t *WebSocketTransport) Initialize(ctx context.Context) error {
 
 	// Send initialize request
 	initReq, err := NewRequest(1, "initialize", InitializeParams{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: negotiateProtocolVersion(""),
 		Capabilities:    Capabilities{},
 		ClientInfo:      t.clientInfo,
 	})
@@ -308,6 +309,15 @@ func (t *WebSocketTransport) Initialize(ctx context.Context) error {
 	if resp.Error != nil {
 		return fmt.Errorf("init error: %s", resp.Error.Message)
 	}
+
+	var result InitializeResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return fmt.Errorf("decode init response: %w", err)
+	}
+	if negotiateProtocolVersion(result.ProtocolVersion) != result.ProtocolVersion {
+		return fmt.Errorf("server selected unsupported protocol version %q", result.ProtocolVersion)
+	}
+	t.protocolVersion = result.ProtocolVersion
 
 	// Send initialized notification
 	initNotif := &Message{JSONRPC: JSONRPCVersion, Method: "notifications/initialized"}

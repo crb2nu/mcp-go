@@ -26,11 +26,27 @@ import (
 // JSONRPCVersion is the JSON-RPC version used by MCP.
 const JSONRPCVersion = "2.0"
 
-// ProtocolVersion is the MCP protocol version (legacy).
-const ProtocolVersion = "2024-11-05"
+const (
+	// ProtocolVersion is the legacy MCP protocol version.
+	ProtocolVersion = "2024-11-05"
+	// ProtocolVersion20250618 is the latest MCP protocol version supported by this SDK.
+	ProtocolVersion20250618 = "2025-06-18"
+)
 
 // SupportedProtocolVersions lists all protocol versions this library supports.
 var SupportedProtocolVersions = []string{ProtocolVersion, ProtocolVersion20250618}
+
+// negotiateProtocolVersion echoes a supported request and otherwise selects the
+// SDK's highest supported version. SupportedProtocolVersions is ordered oldest
+// to newest.
+func negotiateProtocolVersion(requested string) string {
+	for _, version := range SupportedProtocolVersions {
+		if requested == version {
+			return requested
+		}
+	}
+	return SupportedProtocolVersions[len(SupportedProtocolVersions)-1]
+}
 
 // Message is the base JSON-RPC message structure.
 type Message struct {

@@ -73,6 +73,9 @@ func TestStreamableHTTP_InitializeRoundTrip(t *testing.T) {
 	if sessionID == "" {
 		t.Fatal("expected Mcp-Session-Id header in response")
 	}
+	if got := resp.Header.Get(protocolVersionHeader); got != ProtocolVersion20250618 {
+		t.Fatalf("protocol header = %q, want %q", got, ProtocolVersion20250618)
+	}
 
 	var respMsg Message
 	if err := json.NewDecoder(resp.Body).Decode(&respMsg); err != nil {
@@ -90,6 +93,33 @@ func TestStreamableHTTP_InitializeRoundTrip(t *testing.T) {
 
 	if result.ServerInfo.Name != "test" {
 		t.Fatalf("expected server name 'test', got %q", result.ServerInfo.Name)
+	}
+}
+
+func TestStreamableHTTP_ProtocolVersionRequestHeader(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{name: "supported header is honored", header: ProtocolVersion, want: ProtocolVersion},
+		{name: "absent header is tolerated", want: ProtocolVersion20250618},
+		{name: "unknown header falls back", header: "2026-07-28", want: ProtocolVersion20250618},
+	}
+
+	server := NewStreamableHTTPServer(echoHandler, DefaultStreamableHTTPConfig())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
+			if tt.header != "" {
+				req.Header.Set(protocolVersionHeader, tt.header)
+			}
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, req)
+			if got := recorder.Header().Get(protocolVersionHeader); got != tt.want {
+				t.Fatalf("protocol header = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
