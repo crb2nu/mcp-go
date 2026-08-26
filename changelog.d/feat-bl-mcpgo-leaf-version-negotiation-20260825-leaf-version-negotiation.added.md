@@ -1,0 +1,1 @@
+- Add honest leaf protocol negotiation and MCP-Protocol-Version response headers across server.go, types.go, websocket.go, streamable_http.go, their tests, and README.md.

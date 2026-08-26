@@ -15,8 +15,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ProtocolVersion20250618 is the MCP protocol version for Streamable HTTP.
-const ProtocolVersion20250618 = "2025-06-18"
+const protocolVersionHeader = "MCP-Protocol-Version"
 
 // MessageHandler processes an MCP message and returns a response.
 // Used by StreamableHTTPServer to bridge HTTP requests to the daemon's message dispatch.
@@ -122,6 +121,9 @@ func (s *StreamableHTTPServer) log(msg string, args ...any) {
 
 // ServeHTTP implements http.Handler.
 func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The header is optional for backwards compatibility. When supplied, honor
+	// supported versions and safely negotiate unknown versions down to our ceiling.
+	w.Header().Set(protocolVersionHeader, negotiateProtocolVersion(r.Header.Get(protocolVersionHeader)))
 	switch r.Method {
 	case http.MethodPost:
 		s.handlePOST(w, r)
@@ -197,6 +199,11 @@ func (s *StreamableHTTPServer) handlePOST(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			s.writeJSON(w, http.StatusOK, NewErrorResponse(msg.ID, InternalError, err.Error()))
 			return
+		}
+
+		var initResult InitializeResult
+		if err := json.Unmarshal(resp.Result, &initResult); err == nil {
+			w.Header().Set(protocolVersionHeader, negotiateProtocolVersion(initResult.ProtocolVersion))
 		}
 
 		// Create session

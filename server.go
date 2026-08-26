@@ -379,7 +379,7 @@ func (s *Server) handleInitialize(msg *Message) (*Message, error) {
 	}
 
 	result := InitializeResult{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: negotiateProtocolVersion(params.ProtocolVersion),
 		Capabilities:    caps,
 		ServerInfo: ServerInfo{
 			Name:    s.name,

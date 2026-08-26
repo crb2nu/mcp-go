@@ -426,6 +426,40 @@ func TestServer_Initialize_Capabilities(t *testing.T) {
 	}
 }
 
+func TestServer_Initialize_ProtocolVersionNegotiation(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested string
+		want      string
+	}{
+		{name: "legacy is echoed", requested: ProtocolVersion, want: ProtocolVersion},
+		{name: "latest is echoed", requested: ProtocolVersion20250618, want: ProtocolVersion20250618},
+		{name: "unknown newer falls back", requested: "2026-07-28", want: ProtocolVersion20250618},
+		{name: "absent falls back", want: ProtocolVersion20250618},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewServer("test", "1.0.0")
+			req, err := NewRequest(1, "initialize", InitializeParams{ProtocolVersion: tt.requested})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := srv.handleInitialize(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result InitializeResult
+			if err := json.Unmarshal(resp.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.ProtocolVersion != tt.want {
+				t.Fatalf("protocol version = %q, want %q", result.ProtocolVersion, tt.want)
+			}
+		})
+	}
+}
+
 func TestServer_Resources_UnknownURI(t *testing.T) {
 	clientTransport, serverTransport := NewPipeTransport()
 
