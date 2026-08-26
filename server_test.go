@@ -101,6 +101,93 @@ func TestServer_ResultTypeCompleteOnListsAndToolErrors(t *testing.T) {
 	}
 }
 
+func TestServer_ListResultsAreDeterministic(t *testing.T) {
+	orders := [][]string{{"zeta", "alpha", "middle"}, {"middle", "zeta", "alpha"}}
+	results := make([]map[string]json.RawMessage, len(orders))
+
+	for i, order := range orders {
+		srv := NewServer("test", "1")
+		for _, name := range order {
+			srv.AddTool(Tool{Name: name}, nil)
+			srv.AddResource(Resource{Name: name, URI: "resource://" + name}, nil)
+			srv.AddResourceTemplate(ResourceTemplate{Name: name, URITemplate: "template://" + name + "/{id}"}, nil)
+			srv.AddPrompt(Prompt{Name: name}, nil)
+		}
+
+		results[i] = make(map[string]json.RawMessage)
+		for _, method := range []string{"tools/list", "resources/list", "prompts/list"} {
+			req, _ := NewRequest(1, method, map[string]any{})
+			resp, err := srv.handleMessage(context.Background(), req)
+			if err != nil || resp.Error != nil {
+				t.Fatalf("%s failed: resp=%+v err=%v", method, resp, err)
+			}
+			results[i][method] = append(json.RawMessage(nil), resp.Result...)
+		}
+
+		if got := []string{srv.Tools()[0].Name, srv.Tools()[1].Name, srv.Tools()[2].Name}; !equalStrings(got, order) {
+			t.Fatalf("registration order mutated: got %v, want %v", got, order)
+		}
+	}
+
+	for _, method := range []string{"tools/list", "resources/list", "prompts/list"} {
+		if string(results[0][method]) != string(results[1][method]) {
+			t.Errorf("%s differs by registration order:\n%s\n%s", method, results[0][method], results[1][method])
+		}
+	}
+}
+
+func TestServer_ListCacheMetadata(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		server     *Server
+		wantFields bool
+	}{
+		{name: "omitted by default", server: NewServer("test", "1")},
+		{name: "configured", server: NewServer("test", "1", WithListCache(60000, "server")), wantFields: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantFields {
+				tt.server.AddTool(Tool{Name: "zeta"}, nil)
+				tt.server.AddTool(Tool{Name: "alpha"}, nil)
+			}
+			for _, method := range []string{"tools/list", "resources/list", "prompts/list"} {
+				req, _ := NewRequest(1, method, map[string]any{})
+				resp, err := tt.server.handleMessage(context.Background(), req)
+				if err != nil || resp.Error != nil {
+					t.Fatalf("%s failed: resp=%+v err=%v", method, resp, err)
+				}
+				var raw map[string]json.RawMessage
+				if err := json.Unmarshal(resp.Result, &raw); err != nil {
+					t.Fatal(err)
+				}
+				_, hasTTL := raw["ttlMs"]
+				_, hasScope := raw["cacheScope"]
+				if hasTTL != tt.wantFields || hasScope != tt.wantFields {
+					t.Errorf("%s cache fields: ttlMs=%v cacheScope=%v, want both %v; JSON=%s", method, hasTTL, hasScope, tt.wantFields, resp.Result)
+				}
+				if tt.wantFields && (string(raw["ttlMs"]) != "60000" || string(raw["cacheScope"]) != `"server"`) {
+					t.Errorf("%s cache values incorrect: %s", method, resp.Result)
+				}
+				if tt.wantFields && method == "tools/list" {
+					t.Logf("configured tools/list JSON: %s", resp.Result)
+				}
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestServer_ResultTypeCompleteOnNilToolResults(t *testing.T) {
 	tests := []struct {
 		name     string
