@@ -10,6 +10,97 @@ import (
 	"time"
 )
 
+func TestServer_DiscoverAndHandshakeLessToolCall(t *testing.T) {
+	srv := NewServer("discoverable", "1.2.3")
+	srv.SetInstructions("test instructions")
+	var effectiveVersion string
+	srv.AddTool(Tool{Name: "echo", InputSchema: InputSchema{Type: "object"}}, func(ctx context.Context, _ map[string]any) (*CallToolResult, error) {
+		effectiveVersion, _ = ProtocolVersionFromContext(ctx)
+		return TextResult("ok"), nil
+	})
+
+	discover, _ := NewRequest("discover-id", "server/discover", DiscoverParams{Meta: &RequestMeta{ProtocolVersion: ProtocolVersion20260728}})
+	resp, err := srv.handleMessage(context.Background(), discover)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("discover failed: resp=%+v err=%v", resp, err)
+	}
+	var result DiscoverResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "discover-id" || result.ServerInfo.Name != "discoverable" || result.ServerInfo.Version != "1.2.3" {
+		t.Fatalf("unexpected discovery identity: id=%v server=%+v", resp.ID, result.ServerInfo)
+	}
+	if len(result.SupportedProtocolVersions) != 3 || result.SupportedProtocolVersions[2] != ProtocolVersion20260728 {
+		t.Fatalf("supported versions = %v", result.SupportedProtocolVersions)
+	}
+	if result.Capabilities.Tools == nil || len(result.Tools) != 1 || result.Tools[0].Name != "echo" {
+		t.Fatalf("unexpected discovery tools: capabilities=%+v tools=%+v", result.Capabilities, result.Tools)
+	}
+
+	call, _ := NewRequest(2, "tools/call", CallToolParamsWithMeta{
+		CallToolParams: CallToolParams{Name: "echo"},
+		Meta:           &CallToolMeta{ProtocolVersion: ProtocolVersion20260728},
+	})
+	resp, err = srv.handleMessage(context.Background(), call)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("handshake-less call failed: resp=%+v err=%v", resp, err)
+	}
+	var callResult CallToolResult
+	if err := json.Unmarshal(resp.Result, &callResult); err != nil {
+		t.Fatal(err)
+	}
+	if effectiveVersion != ProtocolVersion20260728 || callResult.ResultType != ResultTypeComplete {
+		t.Fatalf("version=%q resultType=%q", effectiveVersion, callResult.ResultType)
+	}
+}
+
+func TestServer_UnsupportedPerRequestProtocolVersion(t *testing.T) {
+	srv := NewServer("test", "1")
+	req, _ := NewRequest(1, "tools/list", RequestParams{Meta: &RequestMeta{ProtocolVersion: "2099-01-01"}})
+	resp, err := srv.handleMessage(context.Background(), req)
+	if err != nil || resp.Error == nil || resp.Error.Code != InvalidParams {
+		t.Fatalf("expected InvalidParams response, got resp=%+v err=%v", resp, err)
+	}
+}
+
+func TestServer_ResultTypeCompleteOnListsAndToolErrors(t *testing.T) {
+	srv := NewServer("test", "1")
+	srv.AddTool(Tool{Name: "fail"}, func(context.Context, map[string]any) (*CallToolResult, error) {
+		return nil, fmt.Errorf("boom")
+	})
+
+	for _, method := range []string{"tools/list", "resources/list", "prompts/list"} {
+		req, _ := NewRequest(method, method, map[string]any{})
+		resp, err := srv.handleMessage(context.Background(), req)
+		if err != nil || resp.Error != nil {
+			t.Fatalf("%s failed: resp=%+v err=%v", method, resp, err)
+		}
+		var result struct {
+			ResultType string `json:"resultType"`
+		}
+		if err := json.Unmarshal(resp.Result, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.ResultType != ResultTypeComplete {
+			t.Fatalf("%s resultType=%q", method, result.ResultType)
+		}
+	}
+
+	req, _ := NewRequest(1, "tools/call", CallToolParams{Name: "fail"})
+	resp, err := srv.handleMessage(context.Background(), req)
+	if err != nil || resp.Error != nil {
+		t.Fatalf("tool error result failed: resp=%+v err=%v", resp, err)
+	}
+	var result CallToolResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ResultType != ResultTypeComplete || !result.IsError {
+		t.Fatalf("unexpected tool error result: %+v", result)
+	}
+}
+
 func TestServer_Concurrency(t *testing.T) {
 	// Create a pipe transport
 	clientTransport, serverTransport := NewPipeTransport()
@@ -658,6 +749,9 @@ func TestServer_StreamingTool(t *testing.T) {
 
 	if len(result.Content) == 0 || result.Content[0].Text != "Process complete" {
 		t.Errorf("unexpected result: %+v", result)
+	}
+	if result.ResultType != ResultTypeComplete {
+		t.Errorf("resultType = %q, want %q", result.ResultType, ResultTypeComplete)
 	}
 }
 

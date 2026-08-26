@@ -29,23 +29,35 @@ const JSONRPCVersion = "2.0"
 const (
 	// ProtocolVersion is the legacy MCP protocol version.
 	ProtocolVersion = "2024-11-05"
-	// ProtocolVersion20250618 is the latest MCP protocol version supported by this SDK.
+	// ProtocolVersion20250618 is the latest version supported by initialize negotiation.
 	ProtocolVersion20250618 = "2025-06-18"
+	// ProtocolVersion20260728 is the handshake-less MCP protocol version.
+	ProtocolVersion20260728 = "2026-07-28"
 )
 
 // SupportedProtocolVersions lists all protocol versions this library supports.
-var SupportedProtocolVersions = []string{ProtocolVersion, ProtocolVersion20250618}
+var SupportedProtocolVersions = []string{ProtocolVersion, ProtocolVersion20250618, ProtocolVersion20260728}
 
-// negotiateProtocolVersion echoes a supported request and otherwise selects the
-// SDK's highest supported version. SupportedProtocolVersions is ordered oldest
-// to newest.
+// IsSupportedProtocolVersion reports whether version is supported by this SDK.
+func IsSupportedProtocolVersion(version string) bool {
+	for _, supported := range SupportedProtocolVersions {
+		if version == supported {
+			return true
+		}
+	}
+	return false
+}
+
+// negotiateProtocolVersion preserves the initialize-first protocol ceiling.
+// ProtocolVersion20260728 is handshake-less and is advertised by discovery,
+// rather than selected through the legacy initialize handshake.
 func negotiateProtocolVersion(requested string) string {
-	for _, version := range SupportedProtocolVersions {
+	for _, version := range []string{ProtocolVersion, ProtocolVersion20250618} {
 		if requested == version {
 			return requested
 		}
 	}
-	return SupportedProtocolVersions[len(SupportedProtocolVersions)-1]
+	return ProtocolVersion20250618
 }
 
 // Message is the base JSON-RPC message structure.
@@ -139,6 +151,33 @@ type InitializeResult struct {
 	Instructions    string       `json:"instructions,omitempty"`
 }
 
+// RequestMeta is the per-request metadata used by handshake-less MCP clients.
+type RequestMeta struct {
+	ProtocolVersion    string       `json:"protocolVersion,omitempty"`
+	ClientCapabilities Capabilities `json:"clientCapabilities,omitempty"`
+	ClientInfo         *ClientInfo  `json:"clientInfo,omitempty"`
+}
+
+// RequestParams contains metadata common to all 2026-07-28 requests.
+type RequestParams struct {
+	Meta *RequestMeta `json:"_meta,omitempty"`
+}
+
+// DiscoverParams contains parameters for server/discover.
+type DiscoverParams = RequestParams
+
+// DiscoverResult describes an MCP server without requiring initialization.
+type DiscoverResult struct {
+	ServerInfo                ServerInfo   `json:"serverInfo"`
+	SupportedProtocolVersions []string     `json:"supportedProtocolVersions"`
+	Capabilities              Capabilities `json:"capabilities"`
+	Tools                     []Tool       `json:"tools"`
+	Instructions              string       `json:"instructions,omitempty"`
+}
+
+// ResultTypeComplete identifies a non-streaming final result.
+const ResultTypeComplete = "complete"
+
 // Tool describes an MCP tool.
 type Tool struct {
 	Name         string         `json:"name"`
@@ -156,7 +195,8 @@ type InputSchema struct {
 
 // ToolsListResult is the result of tools/list.
 type ToolsListResult struct {
-	Tools []Tool `json:"tools"`
+	ResultType string `json:"resultType"`
+	Tools      []Tool `json:"tools"`
 }
 
 // CallToolParams are the parameters for tools/call.
@@ -167,6 +207,7 @@ type CallToolParams struct {
 
 // CallToolResult is the result of tools/call.
 type CallToolResult struct {
+	ResultType        string    `json:"resultType"`
 	Content           []Content `json:"content"`
 	StructuredContent any       `json:"structuredContent,omitempty"`
 	IsError           bool      `json:"isError,omitempty"`
@@ -219,7 +260,8 @@ type Resource struct {
 
 // ResourcesListResult is the result of resources/list.
 type ResourcesListResult struct {
-	Resources []Resource `json:"resources"`
+	ResultType string     `json:"resultType"`
+	Resources  []Resource `json:"resources"`
 }
 
 // Prompt describes an MCP prompt.
@@ -238,7 +280,8 @@ type PromptArgument struct {
 
 // PromptsListResult is the result of prompts/list.
 type PromptsListResult struct {
-	Prompts []Prompt `json:"prompts"`
+	ResultType string   `json:"resultType"`
+	Prompts    []Prompt `json:"prompts"`
 }
 
 // ReadResourceParams are the parameters for resources/read.
@@ -305,6 +348,7 @@ type ResourceTemplate struct {
 
 // ResourcesListResultWithTemplates extends ResourcesListResult with templates.
 type ResourcesListResultWithTemplates struct {
+	ResultType        string             `json:"resultType"`
 	Resources         []Resource         `json:"resources"`
 	ResourceTemplates []ResourceTemplate `json:"resourceTemplates,omitempty"`
 }
@@ -378,7 +422,10 @@ type CallToolParamsWithMeta struct {
 
 // CallToolMeta contains optional metadata for tool calls.
 type CallToolMeta struct {
-	ProgressToken any `json:"progressToken,omitempty"`
+	ProgressToken      any          `json:"progressToken,omitempty"`
+	ProtocolVersion    string       `json:"protocolVersion,omitempty"`
+	ClientCapabilities Capabilities `json:"clientCapabilities,omitempty"`
+	ClientInfo         *ClientInfo  `json:"clientInfo,omitempty"`
 }
 
 // LoggingLevel represents MCP logging levels.

@@ -123,7 +123,11 @@ func (s *StreamableHTTPServer) log(msg string, args ...any) {
 func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The header is optional for backwards compatibility. When supplied, honor
 	// supported versions and safely negotiate unknown versions down to our ceiling.
-	w.Header().Set(protocolVersionHeader, negotiateProtocolVersion(r.Header.Get(protocolVersionHeader)))
+	version := r.Header.Get(protocolVersionHeader)
+	if !IsSupportedProtocolVersion(version) {
+		version = negotiateProtocolVersion(version)
+	}
+	w.Header().Set(protocolVersionHeader, version)
 	switch r.Method {
 	case http.MethodPost:
 		s.handlePOST(w, r)
@@ -240,8 +244,12 @@ func (s *StreamableHTTPServer) handlePOST(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Non-initialize: validate session if required
-	if s.config.SessionRequired {
+	// A supported per-request version opts into the handshake-less protocol.
+	version, hasVersion := requestProtocolVersion(&msg)
+	handshakeLess := hasVersion && IsSupportedProtocolVersion(version)
+
+	// Non-initialize: validate session if required for legacy requests.
+	if s.config.SessionRequired && !handshakeLess {
 		if sessionID == "" {
 			http.Error(w, "Mcp-Session-Id header required", http.StatusBadRequest)
 			return

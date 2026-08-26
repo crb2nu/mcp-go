@@ -1,14 +1,63 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestServerDiscoverOverStdioFraming(t *testing.T) {
+	request := `{"jsonrpc":"2.0","id":"probe-7","method":"server/discover","params":{"_meta":{"protocolVersion":"2026-07-28"}}}`
+	for _, contentLength := range []bool{false, true} {
+		t.Run(fmt.Sprintf("content_length_%t", contentLength), func(t *testing.T) {
+			input := request + "\n"
+			if contentLength {
+				input = fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(request), request)
+			}
+			var output bytes.Buffer
+			srv := NewServer("stdio", "1.0")
+			if err := srv.RunWithIO(context.Background(), strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+
+			payload := output.Bytes()
+			if contentLength {
+				reader := bufio.NewReader(bytes.NewReader(payload))
+				header, err := reader.ReadString('\n')
+				if err != nil || !strings.HasPrefix(header, "Content-Length: ") {
+					t.Fatalf("invalid response framing: %q err=%v", payload, err)
+				}
+				length, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(header, "Content-Length: ")))
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = reader.ReadString('\n')
+				payload = make([]byte, length)
+				if _, err := io.ReadFull(reader, payload); err != nil {
+					t.Fatal(err)
+				}
+			} else if !bytes.HasSuffix(payload, []byte("\n")) {
+				t.Fatalf("newline response missing delimiter: %q", payload)
+			}
+
+			var response Message
+			if err := json.Unmarshal(bytes.TrimSpace(payload), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.ID != "probe-7" || response.Error != nil {
+				t.Fatalf("unexpected response: %+v", response)
+			}
+		})
+	}
+}
 
 func TestStdioTransportRecv_IgnoresNonJSONLines(t *testing.T) {
 	r, w := io.Pipe()

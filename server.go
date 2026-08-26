@@ -12,6 +12,14 @@ import (
 	"time"
 )
 
+type protocolVersionContextKey struct{}
+
+// ProtocolVersionFromContext returns the effective protocol version for a request.
+func ProtocolVersionFromContext(ctx context.Context) (string, bool) {
+	version, ok := ctx.Value(protocolVersionContextKey{}).(string)
+	return version, ok && version != ""
+}
+
 // ToolHandler is a function that handles a tool call.
 type ToolHandler func(ctx context.Context, args map[string]any) (*CallToolResult, error)
 
@@ -292,9 +300,18 @@ func (s *Server) handleMessage(ctx context.Context, msg *Message) (*Message, err
 		return nil, fmt.Errorf("empty message")
 	}
 
+	if version, ok := requestProtocolVersion(msg); ok {
+		if !IsSupportedProtocolVersion(version) {
+			return NewErrorResponse(msg.ID, InvalidParams, "unsupported protocol version: "+version), nil
+		}
+		ctx = context.WithValue(ctx, protocolVersionContextKey{}, version)
+	}
+
 	switch msg.Method {
 	case "initialize":
 		return s.handleInitialize(msg)
+	case "server/discover":
+		return s.handleDiscover(msg)
 	case "notifications/initialized":
 		return nil, nil // No response for notifications
 	case "tools/list":
@@ -321,6 +338,17 @@ func (s *Server) handleMessage(ctx context.Context, msg *Message) (*Message, err
 		}
 		return nil, nil
 	}
+}
+
+func requestProtocolVersion(msg *Message) (string, bool) {
+	if len(msg.Params) == 0 || string(msg.Params) == "null" {
+		return "", false
+	}
+	var params RequestParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil || params.Meta == nil || params.Meta.ProtocolVersion == "" {
+		return "", false
+	}
+	return params.Meta.ProtocolVersion, true
 }
 
 // handlePendingResponse handles responses to requests we sent (e.g., sampling)
@@ -390,8 +418,37 @@ func (s *Server) handleInitialize(msg *Message) (*Message, error) {
 	return NewResponse(msg.ID, result)
 }
 
+func (s *Server) capabilities() Capabilities {
+	caps := Capabilities{}
+	if s.samplingEnabled {
+		caps.Sampling = &SamplingCapability{}
+	}
+	if len(s.tools) > 0 {
+		caps.Tools = &ToolsCapability{}
+	}
+	if len(s.resources) > 0 || len(s.resourceTmpl) > 0 {
+		caps.Resources = &ResourcesCapability{Subscribe: true, ListChanged: true}
+	}
+	if len(s.prompts) > 0 {
+		caps.Prompts = &PromptsCapability{}
+	}
+	return caps
+}
+
+func (s *Server) handleDiscover(msg *Message) (*Message, error) {
+	versions := append([]string(nil), SupportedProtocolVersions...)
+	tools := append([]Tool(nil), s.tools...)
+	return NewResponse(msg.ID, DiscoverResult{
+		ServerInfo:                ServerInfo{Name: s.name, Version: s.version},
+		SupportedProtocolVersions: versions,
+		Capabilities:              s.capabilities(),
+		Tools:                     tools,
+		Instructions:              s.instructions,
+	})
+}
+
 func (s *Server) handleToolsList(msg *Message) (*Message, error) {
-	return NewResponse(msg.ID, ToolsListResult{Tools: s.tools})
+	return NewResponse(msg.ID, ToolsListResult{ResultType: ResultTypeComplete, Tools: s.tools})
 }
 
 func (s *Server) handleToolsCall(ctx context.Context, msg *Message) (*Message, error) {
@@ -420,12 +477,14 @@ func (s *Server) handleToolsCall(ctx context.Context, msg *Message) (*Message, e
 	if err != nil {
 		s.logger.Error("tool call failed", "name", params.Name, "duration", duration, "error", err)
 		return NewResponse(msg.ID, &CallToolResult{
-			Content: []Content{{Type: "text", Text: err.Error()}},
-			IsError: true,
+			ResultType: ResultTypeComplete,
+			Content:    []Content{{Type: "text", Text: err.Error()}},
+			IsError:    true,
 		})
 	}
 
 	s.logger.Info("tool call success", "name", params.Name, "duration", duration)
+	stampCallToolResult(result)
 	return NewResponse(msg.ID, result)
 }
 
@@ -475,13 +534,21 @@ func (s *Server) handleStreamingToolCall(ctx context.Context, msg *Message, para
 	if res.err != nil {
 		s.logger.Error("streaming tool call failed", "name", params.Name, "duration", duration, "error", res.err)
 		return NewResponse(msg.ID, &CallToolResult{
-			Content: []Content{{Type: "text", Text: res.err.Error()}},
-			IsError: true,
+			ResultType: ResultTypeComplete,
+			Content:    []Content{{Type: "text", Text: res.err.Error()}},
+			IsError:    true,
 		})
 	}
 
 	s.logger.Info("streaming tool call success", "name", params.Name, "duration", duration)
+	stampCallToolResult(res.result)
 	return NewResponse(msg.ID, res.result)
+}
+
+func stampCallToolResult(result *CallToolResult) {
+	if result != nil {
+		result.ResultType = ResultTypeComplete
+	}
 }
 
 // sendProgressNotification sends a progress notification to the client.
@@ -629,6 +696,7 @@ func (sc *SamplingContext) CompleteWithSystem(systemPrompt, userPrompt string, m
 
 func (s *Server) handleResourcesList(msg *Message) (*Message, error) {
 	result := ResourcesListResultWithTemplates{
+		ResultType:        ResultTypeComplete,
 		Resources:         s.resources,
 		ResourceTemplates: s.resourceTmpl,
 	}
@@ -768,7 +836,7 @@ func (s *Server) NotifyResourcesListChanged(ctx context.Context) error {
 }
 
 func (s *Server) handlePromptsList(msg *Message) (*Message, error) {
-	return NewResponse(msg.ID, PromptsListResult{Prompts: s.prompts})
+	return NewResponse(msg.ID, PromptsListResult{ResultType: ResultTypeComplete, Prompts: s.prompts})
 }
 
 func (s *Server) handlePromptsGet(ctx context.Context, msg *Message) (*Message, error) {
