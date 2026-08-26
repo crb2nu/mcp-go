@@ -141,9 +141,10 @@ type InitializeResult struct {
 
 // Tool describes an MCP tool.
 type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	InputSchema InputSchema `json:"inputSchema"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	InputSchema  InputSchema    `json:"inputSchema"`
+	OutputSchema map[string]any `json:"outputSchema,omitempty"`
 }
 
 // InputSchema describes the tool's input schema.
@@ -166,8 +167,9 @@ type CallToolParams struct {
 
 // CallToolResult is the result of tools/call.
 type CallToolResult struct {
-	Content []Content `json:"content"`
-	IsError bool      `json:"isError,omitempty"`
+	Content           []Content `json:"content"`
+	StructuredContent any       `json:"structuredContent,omitempty"`
+	IsError           bool      `json:"isError,omitempty"`
 }
 
 // Content represents content in a tool result.

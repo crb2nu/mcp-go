@@ -807,9 +807,13 @@ func JSONResult(v any) (*CallToolResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CallToolResult{
+	result := &CallToolResult{
 		Content: []Content{{Type: "text", Text: text}},
-	}, nil
+	}
+	if isJSONObject(v) {
+		result.StructuredContent = v
+	}
+	return result, nil
 }
 
 // ErrorResult creates an error result.

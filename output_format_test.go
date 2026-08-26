@@ -1,9 +1,80 @@
 package mcp
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestJSONResult_DualEmitsObjectWithoutChangingText(t *testing.T) {
+	payload := map[string]any{"ok": true, "count": 2}
+	for _, format := range []string{"toon", "json", "json_pretty", "auto"} {
+		t.Run(format, func(t *testing.T) {
+			t.Setenv(outputFormatEnv, format)
+			wantText, err := formatStructuredResult(payload)
+			if err != nil {
+				t.Fatalf("formatStructuredResult: %v", err)
+			}
+			result, err := JSONResult(payload)
+			if err != nil {
+				t.Fatalf("JSONResult: %v", err)
+			}
+			if got := result.Content[0].Text; got != wantText {
+				t.Fatalf("text fallback changed: got %q, want %q", got, wantText)
+			}
+			if !reflect.DeepEqual(result.StructuredContent, payload) {
+				t.Fatalf("structured content = %#v, want %#v", result.StructuredContent, payload)
+			}
+		})
+	}
+}
+
+func TestJSONResult_ArrayValuedColumnSurvivesStructuredContent(t *testing.T) {
+	t.Setenv(outputFormatEnv, "toon")
+	payload := map[string]any{
+		"rows": []any{
+			map[string]any{"name": "plan", "files": []any{"alpha.go", "beta.go", "gamma.go"}},
+		},
+	}
+
+	result, err := JSONResult(payload)
+	if err != nil {
+		t.Fatalf("JSONResult: %v", err)
+	}
+	for _, entry := range []string{"alpha.go", "beta.go", "gamma.go"} {
+		if strings.Contains(result.Content[0].Text, entry) {
+			t.Fatalf("expected regression fixture's array entry %q to be absent from TOON fallback, got %q", entry, result.Content[0].Text)
+		}
+	}
+	structured, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	for _, entry := range []string{`"alpha.go"`, `"beta.go"`, `"gamma.go"`} {
+		if !strings.Contains(string(structured), entry) {
+			t.Fatalf("structured content lost %s: %s", entry, structured)
+		}
+	}
+}
+
+func TestJSONResult_NonObjectOmitsStructuredContent(t *testing.T) {
+	t.Setenv(outputFormatEnv, "json")
+	result, err := JSONResult([]string{"a", "b"})
+	if err != nil {
+		t.Fatalf("JSONResult: %v", err)
+	}
+	if result.StructuredContent != nil {
+		t.Fatalf("structured content = %#v, want nil", result.StructuredContent)
+	}
+	wire, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if strings.Contains(string(wire), "structuredContent") {
+		t.Fatalf("non-object result serialized structuredContent: %s", wire)
+	}
+}
 
 func TestJSONResult_DefaultsToTOON(t *testing.T) {
 	t.Setenv("LOOM_MCP_OUTPUT_FORMAT", "")

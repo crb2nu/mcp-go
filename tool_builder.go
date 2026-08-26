@@ -69,6 +69,12 @@ func (b *ToolBuilder) WithEnum(name, description string, values []string, requir
 	return b
 }
 
+// WithOutputSchema declares the JSON Schema for the tool's structured result.
+func (b *ToolBuilder) WithOutputSchema(schema map[string]any) *ToolBuilder {
+	b.tool.OutputSchema = schema
+	return b
+}
+
 // Build returns the constructed Tool.
 func (b *ToolBuilder) Build() Tool {
 	return b.tool

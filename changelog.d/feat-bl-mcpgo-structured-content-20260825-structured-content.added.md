@@ -1,0 +1,1 @@
+- Add lossless structured tool results and output schemas in `types.go`, `server.go`, `output_format.go`, `tool_builder.go`, and `README.md`.
