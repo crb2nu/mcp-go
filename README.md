@@ -13,7 +13,7 @@ MCP is a protocol for connecting AI assistants to external tools and data source
 
 The SDK currently answers `initialize` with protocol version `2024-11-05` across leaf servers.
 Modernization to MCP `2026-07-28` (version negotiation and `structuredContent`) is tracked in
-[the MCP 2026-07-28 gap roadmap](https://gitlab.flexinfer.ai/loom-core/.loom/195-research-mcp-2026-07-28-gap-roadmap-2026-08-15.md).
+loom-core `.loom/195-research-mcp-2026-07-28-gap-roadmap-2026-08-15.md`.
 
 ## Features
 
