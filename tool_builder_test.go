@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -37,4 +38,33 @@ func TestToolBuilder(t *testing.T) {
 		t.Fatalf("Failed to marshal tool: %v", err)
 	}
 	t.Logf("Tool JSON: %s", string(b))
+}
+
+func TestToolBuilder_WithOutputSchema(t *testing.T) {
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"answer": map[string]any{"type": "string"}},
+	}
+	tool := NewTool("answer", "Return an answer").WithOutputSchema(schema).Build()
+	if tool.OutputSchema["type"] != "object" {
+		t.Fatalf("output schema was not retained: %#v", tool.OutputSchema)
+	}
+	b, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatalf("marshal tool: %v", err)
+	}
+	if !strings.Contains(string(b), `"outputSchema":{"properties"`) {
+		t.Fatalf("outputSchema missing from tool JSON: %s", b)
+	}
+}
+
+func TestToolBuilder_LegacyToolOmitsOutputSchema(t *testing.T) {
+	tool := NewTool("legacy", "Legacy tool").WithString("value", "Value", false).Build()
+	b, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatalf("marshal tool: %v", err)
+	}
+	if strings.Contains(string(b), "outputSchema") {
+		t.Fatalf("legacy tool unexpectedly serialized outputSchema: %s", b)
+	}
 }

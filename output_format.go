@@ -1,11 +1,21 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 )
+
+func isJSONObject(v any) bool {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return false
+	}
+	b = bytes.TrimSpace(b)
+	return len(b) > 0 && b[0] == '{'
+}
 
 // OutputFormat controls how structured results are serialized into tool text output.
 //

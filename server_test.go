@@ -426,6 +426,55 @@ func TestServer_Initialize_Capabilities(t *testing.T) {
 	}
 }
 
+func TestServer_ToolsListIncludesOutputSchema(t *testing.T) {
+	srv := NewServer("test", "1.0.0")
+	srv.AddTool(Tool{
+		Name:        "structured",
+		InputSchema: InputSchema{Type: "object"},
+		OutputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"files": map[string]any{"type": "array"}},
+		},
+	}, func(context.Context, map[string]any) (*CallToolResult, error) { return TextResult("ok"), nil })
+
+	req, err := NewRequest(1, "tools/list", map[string]any{})
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := srv.handleMessage(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	var result ToolsListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if got := result.Tools[0].OutputSchema["type"]; got != "object" {
+		t.Fatalf("output schema type = %#v, want object", got)
+	}
+}
+
+func TestCallToolResultStructuredContentJSONTags(t *testing.T) {
+	legacy, err := json.Marshal(CallToolResult{Content: []Content{{Type: "text", Text: "ok"}}})
+	if err != nil {
+		t.Fatalf("marshal legacy result: %v", err)
+	}
+	if strings.Contains(string(legacy), "structuredContent") {
+		t.Fatalf("nil structured content was not omitted: %s", legacy)
+	}
+
+	structured, err := json.Marshal(CallToolResult{
+		Content:           []Content{{Type: "text", Text: "fallback"}},
+		StructuredContent: map[string]any{"files": []string{"a", "b", "c"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal structured result: %v", err)
+	}
+	if !strings.Contains(string(structured), `"structuredContent":{"files":["a","b","c"]}`) {
+		t.Fatalf("incorrect structuredContent JSON: %s", structured)
+	}
+}
+
 func TestServer_Initialize_ProtocolVersionNegotiation(t *testing.T) {
 	tests := []struct {
 		name      string

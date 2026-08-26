@@ -136,12 +136,24 @@ mcp.Tool{
         },
         Required: []string{"param1"},
     },
+    OutputSchema: map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "key": map[string]any{"type": "string"},
+        },
+    },
 }
 
 // Fluent definition (Recommended)
 tool := mcp.NewTool("tool_name", "What this tool does").
     WithString("param1", "Description of param1", true).
     WithNumber("param2", "Optional number", false).
+    WithOutputSchema(map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "key": map[string]any{"type": "string"},
+        },
+    }).
     Build()
 ```
 
@@ -151,12 +163,18 @@ tool := mcp.NewTool("tool_name", "What this tool does").
 // Simple text result
 mcp.TextResult("Hello, world!")
 
-// JSON result (pretty-printed)
+// JSON object result: lossless structuredContent plus a TOON/text fallback
 mcp.JSONResult(map[string]any{"key": "value"})
 
 // Error result
 mcp.ErrorResult(err)
 ```
+
+`JSONResult` preserves its existing text representation for compatibility while
+also returning object-shaped values in `structuredContent`. Arrays and scalar
+values remain text-only because MCP defines `structuredContent` as an object.
+When a tool declares an output schema, keeping the result conformant to that
+schema is the tool author's responsibility.
 
 ### Transports
 
