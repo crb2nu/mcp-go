@@ -104,7 +104,8 @@ func TestStreamableHTTP_ProtocolVersionRequestHeader(t *testing.T) {
 	}{
 		{name: "supported header is honored", header: ProtocolVersion, want: ProtocolVersion},
 		{name: "absent header is tolerated", want: ProtocolVersion20250618},
-		{name: "unknown header falls back", header: "2026-07-28", want: ProtocolVersion20250618},
+		{name: "handshake-less header is honored", header: ProtocolVersion20260728, want: ProtocolVersion20260728},
+		{name: "unknown header falls back", header: "2099-01-01", want: ProtocolVersion20250618},
 	}
 
 	server := NewStreamableHTTPServer(echoHandler, DefaultStreamableHTTPConfig())
@@ -165,6 +166,45 @@ func TestStreamableHTTP_SessionRequired(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 without session, got %d", resp.StatusCode)
+	}
+}
+
+func TestStreamableHTTP_HandshakeLessAdmission(t *testing.T) {
+	srv := NewServer("test", "1.0")
+	srv.AddTool(Tool{Name: "ok"}, func(context.Context, map[string]any) (*CallToolResult, error) {
+		return TextResult("ok"), nil
+	})
+	httpServer := httptest.NewServer(srv.ServeStreamableHTTP(DefaultStreamableHTTPConfig()))
+	defer httpServer.Close()
+
+	for _, tc := range []struct {
+		method string
+		params any
+	}{
+		{"server/discover", DiscoverParams{Meta: &RequestMeta{ProtocolVersion: ProtocolVersion20260728}}},
+		{"tools/call", CallToolParamsWithMeta{CallToolParams: CallToolParams{Name: "ok"}, Meta: &CallToolMeta{ProtocolVersion: ProtocolVersion20260728}}},
+	} {
+		msg, _ := NewRequest(tc.method, tc.method, tc.params)
+		resp := postJSON(t, httpServer.URL, msg, "")
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			t.Fatalf("%s status=%d, want 200", tc.method, resp.StatusCode)
+		}
+		_ = resp.Body.Close()
+	}
+
+	for _, version := range []string{"", "2099-01-01"} {
+		params := RequestParams{}
+		if version != "" {
+			params.Meta = &RequestMeta{ProtocolVersion: version}
+		}
+		msg, _ := NewRequest(version, "server/discover", params)
+		resp := postJSON(t, httpServer.URL, msg, "")
+		if resp.StatusCode != http.StatusBadRequest {
+			_ = resp.Body.Close()
+			t.Fatalf("version %q status=%d, want 400", version, resp.StatusCode)
+		}
+		_ = resp.Body.Close()
 	}
 }
 

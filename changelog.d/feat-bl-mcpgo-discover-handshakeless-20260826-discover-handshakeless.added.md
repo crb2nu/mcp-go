@@ -1,0 +1,1 @@
+- Add `server/discover`, handshake-less per-request protocol metadata, and complete result stamping in `types.go`, `server.go`, `streamable_http.go`, `transport.go`, their tests, and `README.md`.

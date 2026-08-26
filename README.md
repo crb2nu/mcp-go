@@ -11,12 +11,35 @@ MCP is a protocol for connecting AI assistants to external tools and data source
 
 ## Protocol version
 
-The SDK supports MCP protocol versions `2024-11-05` and `2025-06-18`. During
+The SDK supports MCP protocol versions `2024-11-05`, `2025-06-18`, and
+`2026-07-28`. During
 `initialize`, a leaf server echoes a supported client version; an absent or
 unknown version negotiates down to the SDK's highest supported version
-(`2025-06-18`). Streamable HTTP responses include the negotiated
+available to the legacy handshake (`2025-06-18`). Streamable HTTP responses
+include the negotiated
 `MCP-Protocol-Version` header, while requests without that header remain
 backward compatible.
+
+MCP `2026-07-28` clients may skip `initialize` by including supported
+per-request metadata in `params._meta`:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hello","arguments":{},"_meta":{"protocolVersion":"2026-07-28","clientInfo":{"name":"example","version":"1.0"},"clientCapabilities":{}}}}
+```
+
+The server tracks that protocol version only for the request; handlers can read
+it with `mcp.ProtocolVersionFromContext(ctx)`. Legacy initialize-first flows are
+unchanged. With Streamable HTTP, supported per-request metadata permits a POST
+without `Mcp-Session-Id`; missing or unsupported metadata retains the legacy
+session error. Stdio accepts the same request with newline-delimited or
+`Content-Length` framing.
+
+Every server implements `server/discover`. Its result contains `serverInfo`,
+`supportedProtocolVersions`, `capabilities`, `tools`, and optional
+`instructions`, making it suitable for the 2026-07-28 stdio compatibility
+probe. Tool-call results and `tools/list`, `resources/list`, and `prompts/list`
+results always include `"resultType":"complete"`, including tool error and
+streaming completion results.
 
 ## Features
 
