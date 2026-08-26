@@ -52,7 +52,7 @@ without the option, both fields are omitted and the server makes no cache claim.
 
 - **Complete MCP Protocol** - Full JSON-RPC 2.0 + MCP type definitions
 - **Server Framework** - Simple API for registering tools and handling requests
-- **Multiple Transports** - Stdio (newline-delimited + Content-Length), WebSocket, and Streamable HTTP (JSON responses and optional SSE notifications)
+- **Multiple Transports** - Stdio (newline-delimited + Content-Length), WebSocket, and Streamable HTTP
 - **Connection Pool** - Manage multiple MCP server connections with idle reaping
 - **Production Ready** - Battle-tested with 69 production MCP servers in the Loom ecosystem
 - **Examples** - Echo server, file server, and more in `examples/`
