@@ -9,6 +9,12 @@ A Go SDK for building [Model Context Protocol (MCP)](https://modelcontextprotoco
 
 MCP is a protocol for connecting AI assistants to external tools and data sources. This library provides everything you need to build MCP servers in Go.
 
+## Protocol version
+
+The SDK currently answers `initialize` with protocol version `2024-11-05` across leaf servers.
+Modernization to MCP `2026-07-28` (version negotiation and `structuredContent`) is tracked in
+[the MCP 2026-07-28 gap roadmap](https://gitlab.flexinfer.ai/loom-core/.loom/195-research-mcp-2026-07-28-gap-roadmap-2026-08-15.md).
+
 ## Features
 
 - **Complete MCP Protocol** - Full JSON-RPC 2.0 + MCP type definitions
