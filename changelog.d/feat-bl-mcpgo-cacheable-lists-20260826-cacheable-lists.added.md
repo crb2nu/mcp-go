@@ -1,0 +1,1 @@
+- Add deterministic list ordering and optional cache metadata in `server.go`, `types.go`, `server_test.go`, and `README.md`.

@@ -41,6 +41,13 @@ probe. Tool-call results and `tools/list`, `resources/list`, and `prompts/list`
 results always include `"resultType":"complete"`, including tool error and
 streaming completion results.
 
+List responses are deterministic: tools, resources, resource templates, and
+prompts are returned in lexicographic name order regardless of registration
+order. Servers can opt into cache metadata with
+`mcp.NewServer("name", "version", mcp.WithListCache(60_000, "server"))`.
+This adds `"ttlMs":60000` and `"cacheScope":"server"` to each list response;
+without the option, both fields are omitted and the server makes no cache claim.
+
 ## Features
 
 - **Complete MCP Protocol** - Full JSON-RPC 2.0 + MCP type definitions

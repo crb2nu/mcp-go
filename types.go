@@ -195,8 +195,16 @@ type InputSchema struct {
 
 // ToolsListResult is the result of tools/list.
 type ToolsListResult struct {
+	CacheableResult
 	ResultType string `json:"resultType"`
 	Tools      []Tool `json:"tools"`
+}
+
+// CacheableResult contains optional cache metadata for list results.
+// An omitted TTLMS makes no caching claim.
+type CacheableResult struct {
+	TTLMS      *int64 `json:"ttlMs,omitempty"`
+	CacheScope string `json:"cacheScope,omitempty"`
 }
 
 // CallToolParams are the parameters for tools/call.
@@ -260,6 +268,7 @@ type Resource struct {
 
 // ResourcesListResult is the result of resources/list.
 type ResourcesListResult struct {
+	CacheableResult
 	ResultType string     `json:"resultType"`
 	Resources  []Resource `json:"resources"`
 }
@@ -280,6 +289,7 @@ type PromptArgument struct {
 
 // PromptsListResult is the result of prompts/list.
 type PromptsListResult struct {
+	CacheableResult
 	ResultType string   `json:"resultType"`
 	Prompts    []Prompt `json:"prompts"`
 }
@@ -348,6 +358,7 @@ type ResourceTemplate struct {
 
 // ResourcesListResultWithTemplates extends ResourcesListResult with templates.
 type ResourcesListResultWithTemplates struct {
+	CacheableResult
 	ResultType        string             `json:"resultType"`
 	Resources         []Resource         `json:"resources"`
 	ResourceTemplates []ResourceTemplate `json:"resourceTemplates,omitempty"`

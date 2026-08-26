@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,6 +72,8 @@ type Server struct {
 	transport    Transport
 	logger       *slog.Logger
 	validator    *Validator
+	listCache    CacheableResult
+	catalogMu    sync.RWMutex
 
 	// Sampling support
 	samplingEnabled        bool
@@ -85,9 +88,20 @@ type Server struct {
 	wg               sync.WaitGroup
 }
 
+// ServerOption configures a Server.
+type ServerOption func(*Server)
+
+// WithListCache adds cache metadata to tools, resources, and prompts list
+// responses. A zero TTL is emitted when explicitly configured.
+func WithListCache(ttlMs int64, cacheScope string) ServerOption {
+	return func(s *Server) {
+		s.listCache = CacheableResult{TTLMS: &ttlMs, CacheScope: cacheScope}
+	}
+}
+
 // NewServer creates a new MCP server.
-func NewServer(name, version string) *Server {
-	return &Server{
+func NewServer(name, version string, options ...ServerOption) *Server {
+	s := &Server{
 		name:             name,
 		version:          version,
 		tools:            []Tool{},
@@ -104,6 +118,10 @@ func NewServer(name, version string) *Server {
 		validator:        NewValidator(true),
 		concurrencyLimit: 1, // Default to sequential for backward compatibility
 	}
+	for _, option := range options {
+		option(s)
+	}
+	return s
 }
 
 // EnableSampling enables the server to request LLM completions from the client.
@@ -136,6 +154,8 @@ func (s *Server) SetConcurrencyLimit(limit int) {
 
 // AddTool registers a tool with the server.
 func (s *Server) AddTool(tool Tool, handler ToolHandler) {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
 	s.tools = append(s.tools, tool)
 	s.handlers[tool.Name] = handler
 }
@@ -143,18 +163,24 @@ func (s *Server) AddTool(tool Tool, handler ToolHandler) {
 // AddStreamingTool registers a streaming tool with the server.
 // Streaming tools can send incremental updates during execution.
 func (s *Server) AddStreamingTool(tool Tool, handler StreamingToolHandler) {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
 	s.tools = append(s.tools, tool)
 	s.streamHdlr[tool.Name] = handler
 }
 
 // Tools returns the list of registered tools.
 func (s *Server) Tools() []Tool {
-	return s.tools
+	s.catalogMu.RLock()
+	defer s.catalogMu.RUnlock()
+	return append([]Tool(nil), s.tools...)
 }
 
 // AddResource registers a static resource with the server.
 // The handler is called when the resource is read.
 func (s *Server) AddResource(resource Resource, handler ResourceHandler) {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
 	s.resources = append(s.resources, resource)
 	s.resourceHdlr[resource.URI] = handler
 }
@@ -163,30 +189,40 @@ func (s *Server) AddResource(resource Resource, handler ResourceHandler) {
 // Templates allow dynamic resource URIs using URI template syntax (RFC 6570).
 // The handler receives the full URI and should parse template variables.
 func (s *Server) AddResourceTemplate(template ResourceTemplate, handler ResourceHandler) {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
 	s.resourceTmpl = append(s.resourceTmpl, template)
 	s.resourceHdlr[template.URITemplate] = handler
 }
 
 // Resources returns the list of registered resources.
 func (s *Server) Resources() []Resource {
-	return s.resources
+	s.catalogMu.RLock()
+	defer s.catalogMu.RUnlock()
+	return append([]Resource(nil), s.resources...)
 }
 
 // ResourceTemplates returns the list of registered resource templates.
 func (s *Server) ResourceTemplates() []ResourceTemplate {
-	return s.resourceTmpl
+	s.catalogMu.RLock()
+	defer s.catalogMu.RUnlock()
+	return append([]ResourceTemplate(nil), s.resourceTmpl...)
 }
 
 // AddPrompt registers a prompt with the server.
 // The handler is called when the prompt is requested with arguments.
 func (s *Server) AddPrompt(prompt Prompt, handler PromptHandler) {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
 	s.prompts = append(s.prompts, prompt)
 	s.promptHdlr[prompt.Name] = handler
 }
 
 // Prompts returns the list of registered prompts.
 func (s *Server) Prompts() []Prompt {
-	return s.prompts
+	s.catalogMu.RLock()
+	defer s.catalogMu.RUnlock()
+	return append([]Prompt(nil), s.prompts...)
 }
 
 // Run starts the server on stdio.
@@ -380,31 +416,7 @@ func (s *Server) handleInitialize(msg *Message) (*Message, error) {
 	}
 	s.clientSupportsSampling = params.Capabilities.Sampling != nil
 
-	caps := Capabilities{}
-
-	if s.samplingEnabled {
-		caps.Sampling = &SamplingCapability{}
-	}
-
-	// Advertise tools if any are registered
-	if len(s.tools) > 0 {
-		caps.Tools = &ToolsCapability{}
-	}
-
-	// Advertise resources if any are registered
-	if len(s.resources) > 0 || len(s.resourceTmpl) > 0 {
-		caps.Resources = &ResourcesCapability{
-			Subscribe:   true,
-			ListChanged: true,
-		}
-	}
-
-	// Advertise prompts if any are registered
-	if len(s.prompts) > 0 {
-		caps.Prompts = &PromptsCapability{
-			ListChanged: false,
-		}
-	}
+	caps := s.capabilities()
 
 	result := InitializeResult{
 		ProtocolVersion: negotiateProtocolVersion(params.ProtocolVersion),
@@ -419,6 +431,8 @@ func (s *Server) handleInitialize(msg *Message) (*Message, error) {
 }
 
 func (s *Server) capabilities() Capabilities {
+	s.catalogMu.RLock()
+	defer s.catalogMu.RUnlock()
 	caps := Capabilities{}
 	if s.samplingEnabled {
 		caps.Sampling = &SamplingCapability{}
@@ -437,7 +451,9 @@ func (s *Server) capabilities() Capabilities {
 
 func (s *Server) handleDiscover(msg *Message) (*Message, error) {
 	versions := append([]string(nil), SupportedProtocolVersions...)
+	s.catalogMu.RLock()
 	tools := append([]Tool(nil), s.tools...)
+	s.catalogMu.RUnlock()
 	return NewResponse(msg.ID, DiscoverResult{
 		ServerInfo:                ServerInfo{Name: s.name, Version: s.version},
 		SupportedProtocolVersions: versions,
@@ -448,7 +464,11 @@ func (s *Server) handleDiscover(msg *Message) (*Message, error) {
 }
 
 func (s *Server) handleToolsList(msg *Message) (*Message, error) {
-	return NewResponse(msg.ID, ToolsListResult{ResultType: ResultTypeComplete, Tools: s.tools})
+	s.catalogMu.RLock()
+	tools := append([]Tool(nil), s.tools...)
+	s.catalogMu.RUnlock()
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
+	return NewResponse(msg.ID, ToolsListResult{CacheableResult: s.listCache, ResultType: ResultTypeComplete, Tools: tools})
 }
 
 func (s *Server) handleToolsCall(ctx context.Context, msg *Message) (*Message, error) {
@@ -461,11 +481,14 @@ func (s *Server) handleToolsCall(ctx context.Context, msg *Message) (*Message, e
 	start := time.Now()
 
 	// Check for streaming handler first
-	if streamHandler, ok := s.streamHdlr[params.Name]; ok {
+	s.catalogMu.RLock()
+	streamHandler, streaming := s.streamHdlr[params.Name]
+	handler, ok := s.handlers[params.Name]
+	s.catalogMu.RUnlock()
+	if streaming {
 		return s.handleStreamingToolCall(ctx, msg, params, streamHandler, start)
 	}
 
-	handler, ok := s.handlers[params.Name]
 	if !ok {
 		s.logger.Warn("unknown tool", "name", params.Name)
 		return NewErrorResponse(msg.ID, InvalidParams, fmt.Sprintf("unknown tool: %s", params.Name)), nil
@@ -697,10 +720,17 @@ func (sc *SamplingContext) CompleteWithSystem(systemPrompt, userPrompt string, m
 }
 
 func (s *Server) handleResourcesList(msg *Message) (*Message, error) {
+	s.catalogMu.RLock()
+	resources := append([]Resource(nil), s.resources...)
+	templates := append([]ResourceTemplate(nil), s.resourceTmpl...)
+	s.catalogMu.RUnlock()
+	sort.Slice(resources, func(i, j int) bool { return resources[i].Name < resources[j].Name })
+	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })
 	result := ResourcesListResultWithTemplates{
+		CacheableResult:   s.listCache,
 		ResultType:        ResultTypeComplete,
-		Resources:         s.resources,
-		ResourceTemplates: s.resourceTmpl,
+		Resources:         resources,
+		ResourceTemplates: templates,
 	}
 	return NewResponse(msg.ID, result)
 }
@@ -714,7 +744,9 @@ func (s *Server) handleResourcesRead(ctx context.Context, msg *Message) (*Messag
 	s.logger.Info("resource read", "uri", params.URI, "id", msg.ID)
 
 	// Try exact match first
+	s.catalogMu.RLock()
 	handler, ok := s.resourceHdlr[params.URI]
+	s.catalogMu.RUnlock()
 	if !ok {
 		// Try template matching
 		handler = s.matchResourceTemplate(params.URI)
@@ -772,6 +804,8 @@ func (s *Server) handleResourcesUnsubscribe(msg *Message) (*Message, error) {
 // matchResourceTemplate finds a handler for a URI by matching against templates.
 // Simple implementation that checks if URI starts with the template prefix.
 func (s *Server) matchResourceTemplate(uri string) ResourceHandler {
+	s.catalogMu.RLock()
+	defer s.catalogMu.RUnlock()
 	for _, tmpl := range s.resourceTmpl {
 		// Simple prefix matching for templates like "file:///{path}"
 		// A full implementation would use proper RFC 6570 URI template matching
@@ -784,9 +818,12 @@ func (s *Server) matchResourceTemplate(uri string) ResourceHandler {
 }
 
 func (s *Server) resourceExists(uri string) bool {
+	s.catalogMu.RLock()
 	if _, ok := s.resourceHdlr[uri]; ok {
+		s.catalogMu.RUnlock()
 		return true
 	}
+	s.catalogMu.RUnlock()
 	return s.matchResourceTemplate(uri) != nil
 }
 
@@ -838,7 +875,11 @@ func (s *Server) NotifyResourcesListChanged(ctx context.Context) error {
 }
 
 func (s *Server) handlePromptsList(msg *Message) (*Message, error) {
-	return NewResponse(msg.ID, PromptsListResult{ResultType: ResultTypeComplete, Prompts: s.prompts})
+	s.catalogMu.RLock()
+	prompts := append([]Prompt(nil), s.prompts...)
+	s.catalogMu.RUnlock()
+	sort.Slice(prompts, func(i, j int) bool { return prompts[i].Name < prompts[j].Name })
+	return NewResponse(msg.ID, PromptsListResult{CacheableResult: s.listCache, ResultType: ResultTypeComplete, Prompts: prompts})
 }
 
 func (s *Server) handlePromptsGet(ctx context.Context, msg *Message) (*Message, error) {
@@ -849,7 +890,9 @@ func (s *Server) handlePromptsGet(ctx context.Context, msg *Message) (*Message, 
 
 	s.logger.Info("prompt get", "name", params.Name, "id", msg.ID)
 
+	s.catalogMu.RLock()
 	handler, ok := s.promptHdlr[params.Name]
+	s.catalogMu.RUnlock()
 	if !ok {
 		s.logger.Warn("unknown prompt", "name", params.Name)
 		return NewErrorResponse(msg.ID, InvalidParams, fmt.Sprintf("unknown prompt: %s", params.Name)), nil
