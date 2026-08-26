@@ -1,0 +1,1 @@
+- Document the supported MCP protocol version and modernization roadmap in `README.md`.
