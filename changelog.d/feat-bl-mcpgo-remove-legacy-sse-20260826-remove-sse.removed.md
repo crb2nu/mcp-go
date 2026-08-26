@@ -1,0 +1,1 @@
+- Remove the unused legacy SSE transport and its exported server APIs from `sse.go`, plus the corresponding transport documentation from `README.md`.
