@@ -484,7 +484,7 @@ func (s *Server) handleToolsCall(ctx context.Context, msg *Message) (*Message, e
 	}
 
 	s.logger.Info("tool call success", "name", params.Name, "duration", duration)
-	stampCallToolResult(result)
+	result = completeCallToolResult(result)
 	return NewResponse(msg.ID, result)
 }
 
@@ -541,14 +541,16 @@ func (s *Server) handleStreamingToolCall(ctx context.Context, msg *Message, para
 	}
 
 	s.logger.Info("streaming tool call success", "name", params.Name, "duration", duration)
-	stampCallToolResult(res.result)
+	res.result = completeCallToolResult(res.result)
 	return NewResponse(msg.ID, res.result)
 }
 
-func stampCallToolResult(result *CallToolResult) {
-	if result != nil {
-		result.ResultType = ResultTypeComplete
+func completeCallToolResult(result *CallToolResult) *CallToolResult {
+	if result == nil {
+		result = &CallToolResult{}
 	}
+	result.ResultType = ResultTypeComplete
+	return result
 }
 
 // sendProgressNotification sends a progress notification to the client.

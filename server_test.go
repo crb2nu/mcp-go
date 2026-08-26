@@ -101,6 +101,52 @@ func TestServer_ResultTypeCompleteOnListsAndToolErrors(t *testing.T) {
 	}
 }
 
+func TestServer_ResultTypeCompleteOnNilToolResults(t *testing.T) {
+	tests := []struct {
+		name     string
+		addTool  func(*Server)
+		toolName string
+	}{
+		{
+			name: "regular",
+			addTool: func(srv *Server) {
+				srv.AddTool(Tool{Name: "nil"}, func(context.Context, map[string]any) (*CallToolResult, error) {
+					return nil, nil
+				})
+			},
+			toolName: "nil",
+		},
+		{
+			name: "streaming",
+			addTool: func(srv *Server) {
+				srv.AddStreamingTool(Tool{Name: "nil-stream"}, func(context.Context, map[string]any, chan<- StreamUpdate) (*CallToolResult, error) {
+					return nil, nil
+				})
+			},
+			toolName: "nil-stream",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewServer("test", "1")
+			tt.addTool(srv)
+			req, _ := NewRequest(1, "tools/call", CallToolParams{Name: tt.toolName})
+			resp, err := srv.handleMessage(context.Background(), req)
+			if err != nil || resp.Error != nil {
+				t.Fatalf("tool call failed: resp=%+v err=%v", resp, err)
+			}
+			var result CallToolResult
+			if err := json.Unmarshal(resp.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.ResultType != ResultTypeComplete {
+				t.Fatalf("resultType=%q, want %q", result.ResultType, ResultTypeComplete)
+			}
+		})
+	}
+}
+
 func TestServer_Concurrency(t *testing.T) {
 	// Create a pipe transport
 	clientTransport, serverTransport := NewPipeTransport()
