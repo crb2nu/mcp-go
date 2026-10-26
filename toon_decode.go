@@ -424,21 +424,16 @@ func (p *toonParser) parseListArray(indent int, _ int) ([]any, error) {
 		}
 
 		if trimmed == "-" {
-			// Bare dash: the next indented block is the item value.
+			// Bare dash: the next indented block is the item value, an object.
+			// parseObject handles array-header fields, so an item whose first
+			// field is an array keeps its later fields, and the encoder's
+			// nested-array form (a lone "items[N]" field) decodes to
+			// {"items": [...]}.
 			p.pos++
 			if p.pos < len(p.lines) {
-				nextTrimmed := strings.TrimSpace(p.lines[p.pos])
 				nextIndent := measureIndent(p.lines[p.pos])
 
-				if nextIndent >= indent+1 && isArrayHeader(nextTrimmed) {
-					// Nested array inside a list item.
-					item, err := p.parseNestedArrayItem(indent + 1)
-					if err != nil {
-						return nil, err
-					}
-					result = append(result, item)
-				} else if nextIndent >= indent+1 {
-					// Nested object.
+				if nextIndent >= indent+1 {
 					childObj, err := p.parseObject(indent + 1)
 					if err != nil {
 						return nil, err
@@ -534,54 +529,6 @@ func listItemKey(trimmed string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// parseNestedArrayItem handles array items inside list items (e.g., nested arrays).
-func (p *toonParser) parseNestedArrayItem(indent int) (any, error) {
-	trimmed := strings.TrimSpace(p.lines[p.pos])
-
-	// It could be a tabular array, inline array, or list array.
-	if key, count, cols, ok := parseTabularHeader(trimmed); ok {
-		p.pos++
-		arr, err := p.parseTabularRows(indent+1, cols, count)
-		if err != nil {
-			return nil, fmt.Errorf("nested tabular array %q: %w", key, err)
-		}
-		// Wrap in a map since the line has a key.
-		return map[string]any{key: arr}, nil
-	}
-
-	if key, _, ok := parseInlineArrayHeader(trimmed); ok {
-		p.pos++
-		values := parseInlineArrayValues(trimmed)
-		return map[string]any{key: values}, nil
-	}
-
-	if key, count, ok := parseListArrayHeader(trimmed); ok {
-		p.pos++
-		arr, err := p.parseListArray(indent+1, count)
-		if err != nil {
-			return nil, fmt.Errorf("nested list array %q: %w", key, err)
-		}
-		return map[string]any{key: arr}, nil
-	}
-
-	// Fall through to parsing as an object.
-	obj, err := p.parseObject(indent)
-	if err != nil {
-		return nil, err
-	}
-	return obj, nil
-}
-
-// isArrayHeader checks if a trimmed line looks like an array header.
-func isArrayHeader(s string) bool {
-	bracketOpen := strings.Index(s, "[")
-	if bracketOpen < 0 {
-		return false
-	}
-	bracketClose := strings.Index(s[bracketOpen:], "]")
-	return bracketClose >= 0
 }
 
 // splitCSVValues splits a comma-separated string, respecting quoted values.

@@ -167,4 +167,5 @@ func TestDecodeTOON_EncoderRoundTripUnaffected(t *testing.T) {
 	if len(decoded.(map[string]any)["agents"].([]any)) != 2 {
 		t.Fatalf("round-trip lost agents:\n%s\n=> %#v", encoded, decoded)
 	}
+	assertJSONEqual(t, src, decoded)
 }
