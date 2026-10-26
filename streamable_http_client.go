@@ -54,7 +54,7 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, msg *Message) error 
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
-		return fmt.Errorf("transport closed")
+		return ErrTransportClosed
 	}
 	t.mu.Unlock()
 

@@ -1,0 +1,4 @@
+- Stop the default TOON output from dropping fields: arrays of objects with nested values or keys missing from some elements now use the lossless list form instead of a table of their shared primitive columns (`toon_encode.go`). Output for those arrays gets larger.
+- `DecodeTOON` no longer splits a list item whose first field is an array into two items (`toon_decode.go`). The lossy table above had hidden this.
+- `WebSocketTransport.Send` now honors ctx deadlines and cancellation, and `Recv` honors cancellation as well as deadlines. A ctx that is already done returns without touching the connection; any read or write error marks the connection dead (`websocket.go`).
+- Add `ErrTransportClosed` so callers can use `errors.Is` instead of matching "transport closed"; the error text is unchanged (`transport.go`, `websocket.go`, `streamable_http_client.go`).

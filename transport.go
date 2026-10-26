@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
 )
+
+// ErrTransportClosed is returned, or wrapped, by a transport's Send and Recv
+// after Close, so callers can use errors.Is instead of matching error text.
+var ErrTransportClosed = errors.New("transport closed")
 
 // Transport defines the interface for MCP message transport.
 type Transport interface {
@@ -78,7 +83,7 @@ func NewStdioTransport(r io.Reader, w io.Writer) *StdioTransport {
 func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
 	select {
 	case <-t.done:
-		return fmt.Errorf("transport closed")
+		return ErrTransportClosed
 	default:
 	}
 
@@ -118,7 +123,7 @@ func (t *StdioTransport) Send(ctx context.Context, msg *Message) error {
 func (t *StdioTransport) Recv(ctx context.Context) (*Message, error) {
 	select {
 	case <-t.done:
-		return nil, fmt.Errorf("transport closed")
+		return nil, ErrTransportClosed
 	default:
 	}
 
@@ -128,7 +133,7 @@ func (t *StdioTransport) Recv(ctx context.Context) (*Message, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-t.done:
-		return nil, fmt.Errorf("transport closed")
+		return nil, ErrTransportClosed
 	}
 }
 
@@ -275,7 +280,7 @@ func (t *PipeTransport) Send(ctx context.Context, msg *Message) error {
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
-		return fmt.Errorf("transport closed")
+		return ErrTransportClosed
 	}
 	t.mu.Unlock()
 

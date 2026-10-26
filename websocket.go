@@ -3,9 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -36,7 +34,8 @@ type WebSocketTransport struct {
 	// Durability state (atomic; safe to read/write from the keepalive goroutine
 	// concurrently with the connection pool).
 	lastTraffic   atomic.Int64 // unix-nano of the last successful app Send/Recv
-	dead          atomic.Bool  // set when a keepalive/liveness ping fails
+	dead          atomic.Bool  // set when a ping or any read/write fails
+	closed        atomic.Bool  // set by Close; Send/Recv then return ErrTransportClosed
 	stopKeepalive chan struct{}
 	closeOnce     sync.Once
 }
@@ -145,17 +144,55 @@ func NewWebSocketTransport(ctx context.Context, cfg WebSocketConfig, serverName 
 }
 
 // Send sends a message over WebSocket.
+//
+// Send honors ctx. A ctx that is already done returns before anything is
+// written, leaving the connection intact. A ctx deadline becomes the write
+// deadline. A ctx cancelled while the frame is in flight closes the connection:
+// gorilla re-applies its stored write deadline before every frame, so a
+// deadline-based interrupt can be lost, and a partly written frame leaves the
+// stream unusable anyway. Any write error marks the connection dead, because
+// gorilla write errors are permanent.
 func (t *WebSocketTransport) Send(ctx context.Context, msg *Message) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal message: %w", err)
 	}
 
-	if err := t.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed.Load() {
+		return ErrTransportClosed
+	}
+	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("write message: %w", err)
+	}
+
+	// Zero when ctx has no deadline, which clears any deadline from a prior Send.
+	dl, _ := ctx.Deadline()
+	_ = t.conn.SetWriteDeadline(dl)
+
+	// finished stops a cancellation that lands just after the write completed
+	// from closing a healthy connection.
+	var (
+		abortMu  sync.Mutex
+		finished bool
+	)
+	stop := context.AfterFunc(ctx, func() {
+		abortMu.Lock()
+		defer abortMu.Unlock()
+		if !finished {
+			_ = t.Close()
+		}
+	})
+	err = t.conn.WriteMessage(websocket.TextMessage, data)
+	abortMu.Lock()
+	finished = true
+	abortMu.Unlock()
+	stop()
+
+	if err != nil {
+		return t.ioError(ctx, "write message", err)
 	}
 
 	t.markTraffic()
@@ -169,33 +206,44 @@ func (t *WebSocketTransport) Send(ctx context.Context, msg *Message) error {
 // without a read deadline every ctx timeout ABOVE Recv is cosmetic — a stalled
 // hub wedges the caller forever (the Mills spin-wedge / "Backend unavailable"
 // hang, where an author/tool call hung past its own 45s budget and the outer
-// 10m budget alike). gorilla honors SetReadDeadline, so we derive one from the
-// context's deadline; a ctx that carries no deadline clears any prior one so an
-// intentionally long-lived read (a notification listener) still blocks as
-// before.
+// 10m budget alike). gorilla passes read deadlines straight to the net.Conn,
+// so a ctx deadline becomes the read deadline, and cancellation sets the read
+// deadline to the past to interrupt a pending read. A ctx with no deadline
+// clears any prior one, so an intentionally long-lived read (a notification
+// listener) still blocks until a message arrives or ctx is cancelled.
+//
+// Any read error, including one caused by ctx, marks the connection dead:
+// gorilla read errors are permanent. A ctx that is already done returns before
+// reading and leaves the connection intact.
 func (t *WebSocketTransport) Recv(ctx context.Context) (*Message, error) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 
-	if dl, ok := ctx.Deadline(); ok {
-		_ = t.conn.SetReadDeadline(dl)
-	} else {
-		_ = t.conn.SetReadDeadline(time.Time{})
+	if t.closed.Load() {
+		return nil, ErrTransportClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("read message: %w", err)
 	}
 
+	dl, _ := ctx.Deadline()
+	_ = t.conn.SetReadDeadline(dl)
+
+	// Registered after the deadline is set, so nothing can overwrite the past
+	// deadline it installs.
+	fired := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(fired)
+		_ = t.conn.SetReadDeadline(time.Unix(1, 0))
+	})
 	_, data, err := t.conn.ReadMessage()
+	if !stop() {
+		// Cancellation raced the read. Wait for its past deadline to land so it
+		// cannot hit the next Recv after that Recv has reset the deadline.
+		<-fired
+	}
 	if err != nil {
-		var nerr net.Error
-		if errors.As(err, &nerr) && nerr.Timeout() {
-			// Our ctx-derived read deadline fired: gorilla's read stream is now
-			// unusable, so mark the connection dead for the pool / mcphub to redial
-			// rather than reuse it. The raw net i/o-timeout error still surfaces so
-			// mcphub's transport-error path invalidates + retries. (Detecting the
-			// timeout on the error itself avoids a race between the net poller's
-			// read deadline and the context timer both firing at the same instant.)
-			t.markDead()
-		}
-		return nil, fmt.Errorf("read message: %w", err)
+		return nil, t.ioError(ctx, "read message", err)
 	}
 
 	var msg Message
@@ -207,8 +255,32 @@ func (t *WebSocketTransport) Recv(ctx context.Context) (*Message, error) {
 	return &msg, nil
 }
 
+// ioError wraps a failed read or write and marks the connection dead. The
+// underlying error stays wrapped so net.Error and "i/o timeout" checks keep
+// working. It also wraps ctx.Err() when ctx ended the operation, or
+// ErrTransportClosed when Close did, so callers can use errors.Is.
+func (t *WebSocketTransport) ioError(ctx context.Context, op string, err error) error {
+	t.markDead()
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		// The socket deadline and ctx's own timer fire at the same instant, and
+		// the socket can win, so a passed deadline counts even before ctx.Err().
+		if dl, ok := ctx.Deadline(); ok && !time.Now().Before(dl) {
+			ctxErr = context.DeadlineExceeded
+		}
+	}
+	if ctxErr != nil {
+		return fmt.Errorf("%s: %w: %w", op, err, ctxErr)
+	}
+	if t.closed.Load() {
+		return fmt.Errorf("%s: %w: %w", op, err, ErrTransportClosed)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
 // Close closes the WebSocket connection and stops its keepalive loop.
 func (t *WebSocketTransport) Close() error {
+	t.closed.Store(true)
 	t.initialized.Store(false)
 	t.dead.Store(true)
 	if t.stopKeepalive != nil {
@@ -334,11 +406,16 @@ func (t *WebSocketTransport) IsInitialized() bool {
 	return t.initialized.Load()
 }
 
-// Ping sends a ping message to check connection health.
+// Ping sends a ping message to check connection health. It waits at most 5s,
+// or until ctx's deadline if that is sooner.
 func (t *WebSocketTransport) Ping(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(5*time.Second))
+	deadline := time.Now().Add(5 * time.Second)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	return t.conn.WriteControl(websocket.PingMessage, []byte{}, deadline)
 }
 
 // WebSocketClient manages multiple WebSocket connections to MCP servers.
