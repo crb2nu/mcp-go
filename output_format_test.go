@@ -30,7 +30,9 @@ func TestJSONResult_DualEmitsObjectWithoutChangingText(t *testing.T) {
 	}
 }
 
-func TestJSONResult_ArrayValuedColumnSurvivesStructuredContent(t *testing.T) {
+// The TOON text used to drop array-valued columns, leaving structuredContent
+// as their only carrier. Both must now hold them.
+func TestJSONResult_ArrayValuedColumnSurvivesTextAndStructuredContent(t *testing.T) {
 	t.Setenv(outputFormatEnv, "toon")
 	payload := map[string]any{
 		"rows": []any{
@@ -43,8 +45,8 @@ func TestJSONResult_ArrayValuedColumnSurvivesStructuredContent(t *testing.T) {
 		t.Fatalf("JSONResult: %v", err)
 	}
 	for _, entry := range []string{"alpha.go", "beta.go", "gamma.go"} {
-		if strings.Contains(result.Content[0].Text, entry) {
-			t.Fatalf("expected regression fixture's array entry %q to be absent from TOON fallback, got %q", entry, result.Content[0].Text)
+		if !strings.Contains(result.Content[0].Text, entry) {
+			t.Fatalf("TOON text lost array entry %q: %q", entry, result.Content[0].Text)
 		}
 	}
 	structured, err := json.Marshal(result.StructuredContent)

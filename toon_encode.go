@@ -186,16 +186,8 @@ func encodeArray(lines *[]string, indent int, key string, arr []any, anonymous b
 		name = "items"
 	}
 
-	// Try tabular form: array of uniform objects with primitive fields.
-	if headerKeys, rows, ok := tabularizePrimitiveSubset(arr); ok {
-		header := fmt.Sprintf("%s%s[%d]{%s}:", indentStr, name, len(arr), strings.Join(headerKeys, ","))
-		*lines = append(*lines, header)
-		rowIndent := strings.Repeat("  ", indent+1)
-		for _, row := range rows {
-			*lines = append(*lines, rowIndent+strings.Join(row, ","))
-		}
-		return nil
-	}
+	// Try tabular form: array of uniform objects with primitive fields. Arrays
+	// that would lose a field in a table use the list form below instead.
 	if headerKeys, rows, ok := tabularize(arr); ok {
 		header := fmt.Sprintf("%s%s[%d]{%s}:", indentStr, name, len(arr), strings.Join(headerKeys, ","))
 		*lines = append(*lines, header)
@@ -251,6 +243,14 @@ func encodeArray(lines *[]string, indent int, key string, arr []any, anonymous b
 	return nil
 }
 
+// tabularize builds a table for an array whose elements are all objects with
+// the same set of keys and only primitive values. Key order may differ between
+// elements; columns follow the first element.
+//
+// It reports ok=false whenever a table would have to leave a field out (a
+// nested object or array, or a key missing from some elements), so the caller
+// falls back to the lossless list form. Dropping fields here used to hide them
+// from every model reading a tool result in the default TOON format.
 func tabularize(arr []any) (headerKeys []string, rows [][]string, ok bool) {
 	if len(arr) == 0 {
 		return nil, nil, false
@@ -261,12 +261,18 @@ func tabularize(arr []any) (headerKeys []string, rows [][]string, ok bool) {
 		return nil, nil, false
 	}
 
-	// Keys in encounter order.
+	// Keys in encounter order. A duplicate key cannot be expressed as a column.
+	seen := make(map[string]bool, len(firstObj.Entries))
 	for _, e := range firstObj.Entries {
+		if seen[e.Key] {
+			return nil, nil, false
+		}
+		seen[e.Key] = true
 		headerKeys = append(headerKeys, e.Key)
 	}
 
-	// Enforce uniform shape and primitive-only values.
+	// Every element must have exactly the header keys, each with a primitive
+	// value. Equal length plus every header key present means no extra keys.
 	for _, it := range arr {
 		obj, ok := it.(orderedObject)
 		if !ok || len(obj.Entries) != len(headerKeys) {
@@ -274,81 +280,15 @@ func tabularize(arr []any) (headerKeys []string, rows [][]string, ok bool) {
 		}
 
 		row := make([]string, 0, len(headerKeys))
-		for i, wantKey := range headerKeys {
-			if obj.Entries[i].Key != wantKey {
+		for _, key := range headerKeys {
+			val, found := findOrderedObjectKey(obj, key)
+			if !found {
 				return nil, nil, false
 			}
-			tok, err := encodePrimitiveToken(obj.Entries[i].Value)
+			tok, err := encodePrimitiveToken(val)
 			if err != nil {
 				return nil, nil, false
 			}
-			row = append(row, tok)
-		}
-		rows = append(rows, row)
-	}
-
-	return headerKeys, rows, true
-}
-
-// tabularizePrimitiveSubset creates a tabular representation for arrays of objects when a
-// strict table isn't possible (e.g., nested objects/arrays exist).
-//
-// It selects the subset of keys from the first element that:
-// - exist in every element, and
-// - are primitive in every element
-//
-// This produces a compact summary table while keeping complex nested fields out of the output.
-func tabularizePrimitiveSubset(arr []any) (headerKeys []string, rows [][]string, ok bool) {
-	if len(arr) == 0 {
-		return nil, nil, false
-	}
-
-	firstObj, ok := arr[0].(orderedObject)
-	if !ok || len(firstObj.Entries) == 0 {
-		return nil, nil, false
-	}
-
-	// Only consider keys from the first object to keep ordering stable.
-	candidates := make([]string, 0, len(firstObj.Entries))
-	for _, e := range firstObj.Entries {
-		candidates = append(candidates, e.Key)
-	}
-
-	// Build a primitive-safe key subset.
-	for _, key := range candidates {
-		primitiveForAll := true
-		for _, it := range arr {
-			obj, ok := it.(orderedObject)
-			if !ok {
-				return nil, nil, false
-			}
-			val, found := findOrderedObjectKey(obj, key)
-			if !found {
-				primitiveForAll = false
-				break
-			}
-			if _, err := encodePrimitiveToken(val); err != nil {
-				primitiveForAll = false
-				break
-			}
-		}
-		if primitiveForAll {
-			headerKeys = append(headerKeys, key)
-		}
-	}
-
-	// Avoid creating single-column tables unless it's the only useful summary.
-	if len(headerKeys) == 0 {
-		return nil, nil, false
-	}
-
-	// Build rows.
-	for _, it := range arr {
-		obj := it.(orderedObject)
-		row := make([]string, 0, len(headerKeys))
-		for _, key := range headerKeys {
-			val, _ := findOrderedObjectKey(obj, key)
-			tok, _ := encodePrimitiveToken(val)
 			row = append(row, tok)
 		}
 		rows = append(rows, row)

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -120,47 +121,95 @@ func TestDecodeTOON_ListArrayWithObjects(t *testing.T) {
 	assertRoundTrip(t, input)
 }
 
-func TestDecodeTOON_TabularPrimitiveSubsetIsLossy(t *testing.T) {
-	// The encoder's tabularizePrimitiveSubset drops non-primitive fields.
-	// Verify that the decoder correctly recovers the primitive subset the encoder outputs.
-	input := map[string]any{
-		"items": []any{
-			map[string]any{
-				"id": 1,
-				"meta": map[string]any{
-					"created": "2024-01-01",
-				},
+// Arrays of objects that cannot form a strict table used to be encoded as a
+// table of their shared primitive columns, silently dropping everything else.
+// Each case here lost data that way; all must now round-trip intact.
+func TestDecodeTOON_NonUniformObjectArraysRoundTrip(t *testing.T) {
+	cases := map[string]map[string]any{
+		"nested object field": {
+			"items": []any{
+				map[string]any{"id": 1, "meta": map[string]any{"created": "2024-01-01"}},
+				map[string]any{"id": 2, "meta": map[string]any{"created": "2024-01-02"}},
 			},
-			map[string]any{
-				"id": 2,
-				"meta": map[string]any{
-					"created": "2024-01-02",
-				},
+		},
+		"nested array field": {
+			"agents": []any{
+				map[string]any{"agent_id": "a", "files": []any{}, "status": "active"},
+				map[string]any{"agent_id": "b", "files": []any{"x.go", "y.go"}, "status": "idle"},
+			},
+		},
+		"key missing from some elements": {
+			"rows": []any{
+				map[string]any{"id": 1, "name": "a", "note": "only here"},
+				map[string]any{"id": 2, "name": "b"},
+			},
+		},
+		"key present only in later elements": {
+			"rows": []any{
+				map[string]any{"id": 1},
+				map[string]any{"id": 2, "extra": true},
+			},
+		},
+		"field primitive in one element and nested in another": {
+			"rows": []any{
+				map[string]any{"id": 1, "value": "flat"},
+				map[string]any{"id": 2, "value": map[string]any{"deep": 1}},
 			},
 		},
 	}
 
-	toon, err := formatTOON(input)
-	if err != nil {
-		t.Fatalf("formatTOON: %v", err)
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			assertRoundTrip(t, input)
+		})
 	}
+}
 
-	t.Logf("TOON output:\n%s", toon)
+// A list item whose first field is an array used to be read as a standalone
+// nested-array item, with the item's remaining fields split into a second item.
+func TestDecodeTOON_ListItemStartingWithArrayField(t *testing.T) {
+	const input = "agents[2]:\n" +
+		"  -\n" +
+		"    active_files[0]: \n" +
+		"    agent_id: a\n" +
+		"  -\n" +
+		"    active_files[1]: x.go\n" +
+		"    agent_id: b\n" +
+		"    deps[1]{name}:\n" +
+		"      y\n"
 
-	decoded, err := DecodeTOON(toon)
+	decoded, err := DecodeTOON(input)
 	if err != nil {
-		t.Fatalf("DecodeTOON: %v\nTOON:\n%s", err, toon)
+		t.Fatalf("DecodeTOON: %v", err)
 	}
-
-	// The decoder should recover only the primitive fields (id), not meta.
 	expected := map[string]any{
-		"items": []any{
-			map[string]any{"id": float64(1)},
-			map[string]any{"id": float64(2)},
+		"agents": []any{
+			map[string]any{"active_files": []any{}, "agent_id": "a"},
+			map[string]any{"active_files": []any{"x.go"}, "agent_id": "b", "deps": []any{map[string]any{"name": "y"}}},
 		},
 	}
-
 	assertJSONEqual(t, expected, decoded)
+}
+
+func TestFormatTOON_UniformObjectsStillTabular(t *testing.T) {
+	// Same keys in a different order per element is still a lossless table.
+	// formatTOON goes through encoding/json, which sorts map keys, so build the
+	// ordered form directly to exercise differing key order.
+	users := []any{
+		orderedObject{Entries: []orderedEntry{{Key: "id", Value: 1}, {Key: "name", Value: "a"}}},
+		orderedObject{Entries: []orderedEntry{{Key: "name", Value: "b"}, {Key: "id", Value: 2}}},
+	}
+	root := orderedObject{Entries: []orderedEntry{{Key: "users", Value: users}}}
+
+	var lines []string
+	if err := encodeTOONValue(&lines, 0, "", root, toonEncodeOptions{root: true}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got := strings.Join(lines, "\n")
+	want := "users[2]{id,name}:\n  1,a\n  2,b"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
 }
 
 func TestDecodeTOON_NullValue(t *testing.T) {
